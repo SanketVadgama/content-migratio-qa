@@ -1,19 +1,26 @@
+import { useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { CaseInfoSection, emptyCaseInfo, type CaseInfo } from "@/components/qa/CaseInfoSection";
+import { BatchInputSection, newRow } from "@/components/qa/BatchInputSection";
+import { ResultsSection, summarisePage } from "@/components/qa/ResultsSection";
+import { runQaBatch, type CheckStatus, type QaBatchRow, type QaPageResult } from "@/lib/qaEngine";
+import { Download, ShieldCheck } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Content Migration QA — Verify Every Migrated Page" },
+      { title: "Content Migration QA — Automated Batch Checks" },
       {
         name: "description",
         content:
-          "A workspace for tracking, reviewing, and signing off on content migration quality checks.",
+          "Run automated QA across every migrated page: layout, content, links, accessibility and final review checks in one batch.",
       },
-      { property: "og:title", content: "Content Migration QA" },
+      { property: "og:title", content: "Content Migration QA — Automated" },
       {
         property: "og:description",
-        content:
-          "Track, review, and sign off on content migration quality checks in one workspace.",
+        content: "Batch-check migrated pages for layout, content, link and accessibility issues.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -23,20 +30,137 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
+  const [caseInfo, setCaseInfo] = useState<CaseInfo>(emptyCaseInfo);
+  const [rows, setRows] = useState<QaBatchRow[]>([newRow()]);
+  const [pages, setPages] = useState<QaPageResult[]>([]);
+  const [overrides, setOverrides] = useState<Record<string, CheckStatus>>({});
+  const [running, setRunning] = useState(false);
+
+  const totals = useMemo(() => {
+    return pages.reduce(
+      (acc, page) => {
+        const summary = summarisePage(page, overrides);
+        return {
+          total: acc.total + summary.total,
+          autoResolved: acc.autoResolved + summary.autoResolved,
+          needsReview: acc.needsReview + summary.needsReview,
+        };
+      },
+      { total: 0, autoResolved: 0, needsReview: 0 },
+    );
+  }, [pages, overrides]);
+
+  async function handleRun() {
+    const cleaned = rows
+      .map((row) => ({ ...row, pageUrl: row.pageUrl.trim(), referenceUrl: row.referenceUrl?.trim() || "" }))
+      .filter((row) => row.pageUrl !== "");
+    if (cleaned.length === 0) return;
+
+    setRunning(true);
+    setOverrides({});
+    try {
+      const results = await runQaBatch(cleaned);
+      setPages(results);
+      toast.success(`Automated QA finished for ${results.length} page${results.length === 1 ? "" : "s"}`);
+    } catch {
+      toast.error("Automated QA failed to run. Please try again.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function handleExport() {
+    if (pages.length === 0) {
+      toast.error("Run automated QA before exporting a report");
+      return;
+    }
+    const lines: string[] = [
+      "Content Migration QA Report",
+      `Case Number: ${caseInfo.caseNumber || "—"}`,
+      `Designer: ${caseInfo.designerName || "—"}`,
+      `Dealer / Website: ${caseInfo.dealerName || "—"}`,
+      `Website URL: ${caseInfo.websiteUrl || "—"}`,
+      `Date Started: ${caseInfo.dateStarted || "—"}`,
+      `Notes: ${caseInfo.caseNotes || "—"}`,
+      "",
+    ];
+    for (const page of pages) {
+      const summary = summarisePage(page, overrides);
+      lines.push(`PAGE: ${page.pageUrl} (${page.pageType})`);
+      lines.push(
+        `${summary.autoResolved} of ${summary.total} auto-resolved · ${summary.needsReview} need review · ${summary.manual} manual`,
+      );
+      for (const check of page.checks) {
+        const key = `${page.pageUrl}::${check.id}`;
+        const status = overrides[key] ?? check.status;
+        lines.push(
+          `  [${status.toUpperCase()}]${overrides[key] ? " (manual)" : ""} ${check.category} — ${check.label}${
+            check.evidence ? ` :: ${check.evidence}` : ""
+          }`,
+        );
+      }
+      lines.push("");
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `qa-report-${caseInfo.caseNumber || "case"}.txt`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    toast.success("QA report exported");
+  }
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-background px-6">
-      <div className="w-full max-w-xl text-center">
-        <span className="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          Workspace
-        </span>
-        <h1 className="mt-6 text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
-          Content Migration QA
-        </h1>
-        <p className="mt-4 text-base text-muted-foreground">
-          A blank starting point. Tell me what to build first — page inventory,
-          diff review, checklists, or sign-off tracking.
-        </p>
-      </div>
-    </main>
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <ShieldCheck className="size-5" />
+            </span>
+            <div>
+              <h1 className="text-base font-semibold text-foreground">Content Migration QA — Automated</h1>
+              <p className="text-xs text-muted-foreground">Batch page verification for migration cases</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-sm font-semibold text-foreground">
+                {totals.autoResolved} of {totals.total} checks auto-resolved
+              </p>
+              <div className="mt-1 h-1.5 w-44 overflow-hidden rounded-full bg-neutral-soft">
+                <div
+                  className="h-full rounded-full bg-brand transition-all"
+                  style={{ width: totals.total ? `${(totals.autoResolved / totals.total) * 100}%` : "0%" }}
+                />
+              </div>
+            </div>
+            <Button variant="outline" onClick={handleExport}>
+              <Download className="size-4" /> Export QA Report
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
+        <CaseInfoSection value={caseInfo} onChange={setCaseInfo} />
+        <BatchInputSection rows={rows} onChange={setRows} onRun={handleRun} running={running} />
+        <ResultsSection
+          pages={pages}
+          overrides={overrides}
+          running={running}
+          onOverride={(key, status) =>
+            setOverrides((current) => {
+              const next = { ...current };
+              if (status === null) delete next[key];
+              else next[key] = status;
+              return next;
+            })
+          }
+        />
+      </main>
+    </div>
   );
 }
