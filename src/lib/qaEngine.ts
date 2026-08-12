@@ -1,5 +1,5 @@
 // Single integration point for the automated QA backend.
-// TODO: replace mock with Supabase edge function call
+// Phase 1: real static-HTML analysis via a TanStack Start server function.
 
 export type PageType = "homepage" | "content-migration" | "other";
 
@@ -65,68 +65,25 @@ export const CHECK_DEFINITIONS: { id: string; category: CheckCategory; label: st
   { id: "final-special-requests", category: "Final Review", label: "All special requests addressed" },
 ];
 
-const MOCK_EVIDENCE: Record<string, string> = {
-  "resp-overflow": "Horizontal scrollbar detected at 375px — hero image overflows by 24px.",
-  "resp-header-1800": "Header container caps at 1440px, leaving unstyled gutters at 1920px.",
-  "content-single-h1": "2 H1 elements found (hero heading and section heading).",
-  "content-lorem": "1 block of placeholder copy found in the second content section.",
-  "content-dealer-names": "Placeholder text \"Dealer Name Here\" found in the footer.",
-  "content-spelling": "3 double-space occurrences and 1 suspected typo detected.",
-  "links-ga4": "5 of 12 links are missing GA4 event attributes.",
-  "links-404": "3 broken links found.",
-  "links-carried-over": "2 links present on the reference page were not found on the new page.",
-  "tech-alt-text": "2 images missing alt text.",
-  "tech-image-size": "1 image served at 4000px wide (rendered at 800px).",
-  "tech-element-order": "Section order differs from the reference page in 1 place.",
-  "final-case-description": "Manual confirmation required — case description not machine-readable.",
-  "final-special-requests": "Manual confirmation required — special requests are free text.",
-};
-
-/** Deterministic pseudo-random so repeated runs on the same URL look stable. */
-function hash(input: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i += 1) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h);
-}
-
-function mockStatus(row: QaBatchRow, checkId: string, index: number): CheckStatus {
-  const seed = hash(`${row.pageUrl}::${checkId}`) % 100;
-  if (checkId === "links-carried-over" && !row.referenceUrl) return "na";
-  if (checkId.startsWith("final-")) return seed % 2 === 0 ? "review" : "pass";
-  if (seed < 62) return "pass";
-  if (seed < 80) return "review";
-  if (seed < 92) return "fail";
-  return index % 2 === 0 ? "na" : "pass";
-}
+/** Editable blocklist for placeholder dealer-name detection (case-insensitive). */
+export const DEALER_NAME_BLOCKLIST: string[] = [
+  "DealerOn XXX",
+  "Kerndt",
+  "Rothbard",
+  "Dealer Name Here",
+  "XXXX",
+  "Lorem Dealer",
+];
 
 /**
  * Runs the automated QA batch.
  *
- * TODO: replace mock with Supabase edge function call.
- * Swap the body below for an invoke of the QA edge function; the input
- * (`QaBatchRow[]`) and output (`QaPageResult[]`) contracts stay identical.
+ * Delegates to the TanStack Start server function (`runQaBatchServer`), which
+ * runs on the server and can fetch arbitrary public URLs without CORS issues.
+ * Input (`QaBatchRow[]`) and output (`QaPageResult[]`) contracts are unchanged,
+ * so the UI needs no modification.
  */
 export async function runQaBatch(rows: QaBatchRow[]): Promise<QaPageResult[]> {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-
-  return rows.map((row) => ({
-    pageUrl: row.pageUrl,
-    pageType: row.pageType,
-    checks: CHECK_DEFINITIONS.map((definition, index) => {
-      const status = mockStatus(row, definition.id, index);
-      return {
-        id: definition.id,
-        category: definition.category,
-        label: definition.label,
-        status,
-        evidence:
-          status === "fail" || status === "review"
-            ? (MOCK_EVIDENCE[definition.id] ?? "Automated check could not be resolved with confidence.")
-            : undefined,
-      } satisfies QaCheck;
-    }),
-  }));
+  const { runQaBatchServer } = await import("./qaEngine.server");
+  return runQaBatchServer({ data: rows });
 }
