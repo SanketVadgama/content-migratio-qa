@@ -7,7 +7,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { parse, type HTMLElement } from "node-html-parser";
 import {
-  CHECK_DEFINITIONS,
+  CHECK_CATALOG,
+  checksForType,
   DEALER_NAME_BLOCKLIST,
   type CheckStatus,
   type QaBatchRow,
@@ -22,6 +23,47 @@ const PAGE_TIMEOUT_MS = 15_000;
 const MAX_LINKS_PER_PAGE = 100;
 const PAGE_CONCURRENCY = 4;
 const LINK_CONCURRENCY = 6;
+
+// Optional Phase 2 render service (self-hosted Playwright). When RENDER_SERVICE_URL
+// is set, the responsive checks call it for real measurements; otherwise they fall
+// back to honest "review" placeholders so the app still works without it.
+const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "";
+const RENDER_SERVICE_TOKEN = process.env.RENDER_SERVICE_TOKEN || "";
+
+interface RenderCheck {
+  pass: boolean | null;
+  detail: string;
+}
+interface RenderResults {
+  overflow: RenderCheck;
+  header1800: RenderCheck;
+  stacking: RenderCheck;
+}
+
+async function callRenderService(url: string): Promise<RenderResults | null> {
+  if (!RENDER_SERVICE_URL) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45_000);
+    const res = await fetch(`${RENDER_SERVICE_URL.replace(/\/$/, "")}/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, token: RENDER_SERVICE_TOKEN }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json()) as { ok: boolean; results?: RenderResults };
+    return data.ok && data.results ? data.results : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderCheckToStatus(c: RenderCheck): { status: CheckStatus; evidence?: string } {
+  if (c.pass === true) return { status: "pass" };
+  if (c.pass === false) return { status: "fail", evidence: c.detail };
+  return { status: "review", evidence: c.detail };
+}
 
 interface FetchedPage {
   ok: boolean;
@@ -98,22 +140,26 @@ function scopeToContent(fullHtml: string): { region: string; node: HTMLElement }
   const clone = parse(fullHtml);
 
   const stripSelectors = [
+    // Chrome by semantic tag — but NOT the top-level document landmarks only;
+    // these are safe because content headings never live inside <header>/<footer>/<nav>.
     "header",
     "footer",
     "nav",
     "script",
     "style",
     "noscript",
+    // Known DealerOn/LeadScience chrome wrappers (specific, not substring-matched).
     ".headerWrapper",
     ".sitewide-footer-content",
     '[aria-label="Offers"]',
     '[role="banner"]',
     '[role="contentinfo"]',
     '[role="navigation"]',
-    '[class*="header"]',
-    '[class*="footer"]',
-    '[class*="navbar"]',
-    '[id*="nav"]',
+    "#nav",
+    "#nav-sidebar",
+    "#navbar-header",
+    "#horizontal-navbar-collapse",
+    "#vertical-navbar-collapse",
   ];
   stripSelectors.forEach((sel) => {
     try {
@@ -173,16 +219,18 @@ async function checkLink(url: string): Promise<number> {
   }
 }
 
-function buildChecks(map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }>): QaCheck[] {
-  return CHECK_DEFINITIONS.map((def) => {
+function buildChecks(
+  pageType: QaBatchRow["pageType"],
+  map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }>,
+): QaCheck[] {
+  return checksForType(pageType).map((def) => {
     const r = map[def.id] ?? { status: "review" as CheckStatus, evidence: "Not evaluated." };
     return {
       id: def.id,
       category: def.category,
       label: def.label,
       status: r.status,
-      evidence:
-        r.status === "fail" || r.status === "review" ? r.evidence : undefined,
+      evidence: r.status === "fail" || r.status === "review" ? r.evidence : undefined,
       details: r.details,
     } satisfies QaCheck;
   });
@@ -197,10 +245,10 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
       ? `Could not fetch page: ${page.error}`
       : `Could not fetch page (HTTP ${page.status}).`;
     const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
-    CHECK_DEFINITIONS.forEach((def, i) => {
+    checksForType(row.pageType).forEach((def, i) => {
       map[def.id] = { status: "review", evidence: i === 0 ? reason : "Page not analyzed." };
     });
-    return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(map) };
+    return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
   }
 
   // Scope to main content — header, footer, and nav are explicitly NOT QA'd.
@@ -286,23 +334,35 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
       const linkItems: QaDetailItem[] = [];
       let tagged = 0;
       anchors.forEach((a) => {
-        const attrs = a.rawAttrs.toLowerCase();
+        const attrs = a.rawAttrs;
+        const attrsLower = attrs.toLowerCase();
         const href = a.getAttribute("href") ?? "";
         const onclick = (a.getAttribute("onclick") ?? "").toLowerCase();
         const isTagged =
-          attrs.includes("data-dotagging") || // DealerOn dotagging schema (primary)
-          attrs.includes("ga4") ||
-          attrs.includes("gtm") ||
+          attrsLower.includes("data-dotagging") ||
+          attrsLower.includes("ga4") ||
+          attrsLower.includes("gtm") ||
           onclick.includes("gtag") ||
           onclick.includes("datalayer") ||
           href.toLowerCase().includes("utm_");
         if (isTagged) tagged++;
         const linkText = a.text.replace(/\s+/g, " ").trim();
+
+        // Collect every data-dotagging-* attribute so the report can show the full GA4 tagging.
+        const ga4Attrs: string[] = [];
+        const attrRegex = /(data-dotagging-[a-z-]+)="([^"]*)"/gi;
+        let m: RegExpExecArray | null;
+        while ((m = attrRegex.exec(attrs)) !== null) {
+          ga4Attrs.push(`${m[1]}="${m[2]}"`);
+        }
+
         linkItems.push({
           primary: href || "(no href)",
           secondary: linkText || "(no text)",
           flag: isTagged ? "ok" : "warn",
           note: isTagged ? "GA4 tagged" : "no GA4 tagging",
+          // Full GA4 tagging detail (all dotagging attributes on this link).
+          extra: ga4Attrs.length ? ga4Attrs : undefined,
         });
       });
       const total = anchors.length;
@@ -351,11 +411,11 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
 
   // links-carried-over (needs reference)
   if (!row.referenceUrl) {
-    map["links-carried-over"] = { status: "na" };
+    map["content-links-carried-over"] = { status: "na" };
   } else {
     const ref = await fetchPage(row.referenceUrl);
     if (!ref.ok || !ref.html) {
-      map["links-carried-over"] = {
+      map["content-links-carried-over"] = {
         status: "review",
         evidence: `Could not fetch reference page${ref.error ? `: ${ref.error}` : ` (HTTP ${ref.status})`}.`,
       };
@@ -374,7 +434,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
       const refSet = collect(refRoot, row.referenceUrl);
       const newSet = collect(root, row.pageUrl);
       const missing = [...refSet].filter((u) => !newSet.has(u));
-      map["links-carried-over"] =
+      map["content-links-carried-over"] =
         missing.length === 0
           ? { status: "pass" }
           : {
@@ -449,16 +509,41 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
         : { status: "review", evidence: "Requires rendered-browser check (Phase 2).", details };
   }
 
-  // Phase 2 / manual placeholders — set honestly
-  map["resp-mobile-tablet"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-  map["resp-overflow"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-  map["resp-header-1800"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+  // Responsive / Layout — real measurements via the render service when configured,
+  // otherwise honest placeholders.
+  const render = await callRenderService(row.pageUrl);
+  if (render) {
+    const overflow = renderCheckToStatus(render.overflow);
+    const header = renderCheckToStatus(render.header1800);
+    const stacking = renderCheckToStatus(render.stacking);
+    map["resp-overflow"] = overflow;
+    map["resp-header-1800"] = header;
+    map["resp-mobile-tablet"] = stacking;
+    map["resp-mobile-360"] = stacking;
+    map["resp-image-title-stacking"] = {
+      status: stacking.status === "pass" ? "review" : stacking.status,
+      evidence:
+        stacking.status === "pass"
+          ? "Fits at 360px; image→title→content order still needs a manual glance."
+          : stacking.evidence,
+    };
+  } else {
+    map["resp-mobile-tablet"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-overflow"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-header-1800"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-image-title-stacking"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-mobile-360"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+  }
+
+  // Manual placeholders — set honestly
+  map["content-dealer-logo"] = { status: "review", evidence: "Manual review — logo crop/resize needs a visual check." };
   map["tech-element-order"] = { status: "review", evidence: "Manual review — element order is intent-dependent." };
+  map["tech-custom-forms"] = { status: "review", evidence: "Manual review — process check, not a page-state check." };
   map["tech-dealer-codes"] = { status: "review", evidence: "Manual review — depends on what could be templated." };
   map["final-case-description"] = { status: "review", evidence: "Manual confirmation required." };
   map["final-special-requests"] = { status: "review", evidence: "Manual confirmation required." };
 
-  return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(map) };
+  return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
 }
 
 export const runQaBatchServer = createServerFn({ method: "POST" })
