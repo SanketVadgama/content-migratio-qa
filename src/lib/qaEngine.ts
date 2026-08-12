@@ -20,6 +20,24 @@ export interface QaBatchRow {
   pageType: PageType;
 }
 
+/** Structured inspection data shown on-screen under a check (never in the PDF/download). */
+export interface QaCheckDetails {
+  /** Kind of detail payload, so the UI knows how to render it. */
+  kind: "images" | "links" | "oversized-images";
+  items: QaDetailItem[];
+}
+
+export interface QaDetailItem {
+  /** For images: the src. For links: the href. */
+  primary: string;
+  /** For images: the alt text (or empty). For links: the visible link text. */
+  secondary?: string;
+  /** Per-item status flag, e.g. "tagged" / "untagged" / "missing-alt" / "oversized". */
+  flag?: "ok" | "warn" | "fail";
+  /** Short human note, e.g. "no alt text" or "declared 4000px wide". */
+  note?: string;
+}
+
 /** One automated check result for a page. */
 export interface QaCheck {
   id: string;
@@ -28,6 +46,8 @@ export interface QaCheck {
   status: CheckStatus;
   /** Human-readable supporting detail, present for fail/review checks. */
   evidence?: string | undefined;
+  /** Optional structured inspection data — shown on-screen only, omitted from downloads. */
+  details?: QaCheckDetails | undefined;
 }
 
 /** Automated QA result for a single page. */
