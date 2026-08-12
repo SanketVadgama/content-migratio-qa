@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/qa/StatusPill";
-import { CATEGORY_ORDER, type CheckStatus, type QaPageResult } from "@/lib/qaEngine";
-import { ChevronDown, ChevronRight, Info } from "lucide-react";
+import {
+  CATEGORY_ORDER,
+  type CheckStatus,
+  type QaCheckDetails,
+  type QaPageResult,
+} from "@/lib/qaEngine";
+import { ChevronDown, ChevronRight, Info, ListChecks } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface PageSummary {
@@ -135,6 +140,7 @@ function PageCard({
                         status={overrides[key] ?? check.status}
                         autoStatus={check.status}
                         evidence={check.evidence}
+                        details={check.details}
                         overridden={Boolean(overrides[key])}
                         onOverride={(status) => onOverride(key, status)}
                       />
@@ -155,6 +161,7 @@ function CheckRow({
   status,
   autoStatus,
   evidence,
+  details,
   overridden,
   onOverride,
 }: {
@@ -162,11 +169,14 @@ function CheckRow({
   status: CheckStatus;
   autoStatus: CheckStatus;
   evidence?: string | undefined;
+  details?: QaCheckDetails | undefined;
   overridden: boolean;
   onOverride: (status: CheckStatus | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasEvidence = Boolean(evidence) && (autoStatus === "fail" || autoStatus === "review");
+  const hasDetails = Boolean(details && details.items.length > 0);
+  const canExpand = hasEvidence || hasDetails;
 
   return (
     <li className="border-b border-border/60 px-5 py-3 last:border-b-0">
@@ -180,7 +190,7 @@ function CheckRow({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {hasEvidence ? (
+          {canExpand ? (
             <Button
               type="button"
               variant="ghost"
@@ -188,34 +198,95 @@ function CheckRow({
               onClick={() => setExpanded((value) => !value)}
               className="h-7 gap-1 px-2 text-xs text-muted-foreground"
             >
-              <Info className="size-3.5" />
-              {expanded ? "Hide evidence" : "Evidence"}
+              {hasDetails ? <ListChecks className="size-3.5" /> : <Info className="size-3.5" />}
+              {expanded ? "Hide" : hasDetails ? `Details (${details!.items.length})` : "Evidence"}
             </Button>
           ) : null}
           <StatusPill status={status} />
         </div>
       </div>
 
-      {hasEvidence && expanded ? (
+      {canExpand && expanded ? (
         <div className="mt-3 rounded-lg border border-border bg-muted/50 p-3">
-          <p className="text-sm text-foreground">{evidence}</p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-muted-foreground">Manual override:</span>
-            <OverrideButton active={status === "pass" && overridden} onClick={() => onOverride("pass")} tone="pass">
-              Mark pass
-            </OverrideButton>
-            <OverrideButton active={status === "fail" && overridden} onClick={() => onOverride("fail")} tone="fail">
-              Mark fail
-            </OverrideButton>
-            {overridden ? (
-              <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onOverride(null)}>
-                Reset to automated
-              </Button>
-            ) : null}
-          </div>
+          {hasEvidence ? <p className="text-sm text-foreground">{evidence}</p> : null}
+
+          {hasDetails ? <DetailList details={details!} /> : null}
+
+          {hasEvidence ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Manual override:</span>
+              <OverrideButton active={status === "pass" && overridden} onClick={() => onOverride("pass")} tone="pass">
+                Mark pass
+              </OverrideButton>
+              <OverrideButton active={status === "fail" && overridden} onClick={() => onOverride("fail")} tone="fail">
+                Mark fail
+              </OverrideButton>
+              {overridden ? (
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onOverride(null)}>
+                  Reset to automated
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </li>
+  );
+}
+
+/** Renders the on-screen inspection lists (images / links / oversized). Never part of the download. */
+function DetailList({ details }: { details: QaCheckDetails }) {
+  const isImages = details.kind === "images" || details.kind === "oversized-images";
+
+  return (
+    <div className={cn("space-y-2", "mt-1")}>
+      {details.items.map((item, i) => (
+        <div
+          key={`${item.primary}-${i}`}
+          className="flex items-start gap-3 rounded-md border border-border/60 bg-card px-3 py-2"
+        >
+          {isImages ? (
+            <img
+              src={item.primary}
+              alt=""
+              className="size-10 shrink-0 rounded object-cover"
+              loading="lazy"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+              }}
+            />
+          ) : null}
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-mono text-xs text-foreground" title={item.primary}>
+              {item.primary}
+            </p>
+            {item.secondary ? (
+              <p className="truncate text-xs text-muted-foreground" title={item.secondary}>
+                {details.kind === "links" ? "text: " : "alt: "}
+                {item.secondary}
+              </p>
+            ) : (
+              <p className="text-xs italic text-muted-foreground">
+                {details.kind === "links" ? "(no link text)" : "(no alt text)"}
+              </p>
+            )}
+          </div>
+          {item.note ? (
+            <span
+              className={cn(
+                "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                item.flag === "ok" && "border-success/30 text-success",
+                item.flag === "warn" && "border-warning/40 text-warning-foreground",
+                item.flag === "fail" && "border-danger/30 text-danger",
+                !item.flag && "border-border text-muted-foreground",
+              )}
+            >
+              {item.note}
+            </span>
+          ) : null}
+        </div>
+      ))}
+    </div>
   );
 }
 
