@@ -12,6 +12,8 @@ import {
   type CheckStatus,
   type QaBatchRow,
   type QaCheck,
+  type QaCheckDetails,
+  type QaDetailItem,
   type QaPageResult,
 } from "./qaEngine";
 
@@ -171,7 +173,7 @@ async function checkLink(url: string): Promise<number> {
   }
 }
 
-function buildChecks(map: Record<string, { status: CheckStatus; evidence?: string }>): QaCheck[] {
+function buildChecks(map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }>): QaCheck[] {
   return CHECK_DEFINITIONS.map((def) => {
     const r = map[def.id] ?? { status: "review" as CheckStatus, evidence: "Not evaluated." };
     return {
@@ -181,6 +183,7 @@ function buildChecks(map: Record<string, { status: CheckStatus; evidence?: strin
       status: r.status,
       evidence:
         r.status === "fail" || r.status === "review" ? r.evidence : undefined,
+      details: r.details,
     } satisfies QaCheck;
   });
 }
@@ -193,7 +196,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     const reason = page.error
       ? `Could not fetch page: ${page.error}`
       : `Could not fetch page (HTTP ${page.status}).`;
-    const map: Record<string, { status: CheckStatus; evidence?: string }> = {};
+    const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
     CHECK_DEFINITIONS.forEach((def, i) => {
       map[def.id] = { status: "review", evidence: i === 0 ? reason : "Page not analyzed." };
     });
@@ -207,7 +210,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   const lowerText = text.toLowerCase();
   const lowerHtml = scopedHtml.toLowerCase();
 
-  const map: Record<string, { status: CheckStatus; evidence?: string }> = {};
+  const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
   const scopeNote = ` (scoped to ${region})`;
 
   // content-single-h1
@@ -280,24 +283,38 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     if (anchors.length === 0) {
       map["links-ga4"] = { status: "na" };
     } else {
+      const linkItems: QaDetailItem[] = [];
       let tagged = 0;
       anchors.forEach((a) => {
         const attrs = a.rawAttrs.toLowerCase();
-        const href = (a.getAttribute("href") ?? "").toLowerCase();
+        const href = a.getAttribute("href") ?? "";
         const onclick = (a.getAttribute("onclick") ?? "").toLowerCase();
         const isTagged =
+          attrs.includes("data-dotagging") || // DealerOn dotagging schema (primary)
           attrs.includes("ga4") ||
           attrs.includes("gtm") ||
           onclick.includes("gtag") ||
           onclick.includes("datalayer") ||
-          href.includes("utm_");
+          href.toLowerCase().includes("utm_");
         if (isTagged) tagged++;
+        const linkText = a.text.replace(/\s+/g, " ").trim();
+        linkItems.push({
+          primary: href || "(no href)",
+          secondary: linkText || "(no text)",
+          flag: isTagged ? "ok" : "warn",
+          note: isTagged ? "GA4 tagged" : "no GA4 tagging",
+        });
       });
       const total = anchors.length;
+      const details: QaCheckDetails = { kind: "links", items: linkItems };
       map["links-ga4"] =
         tagged === total
-          ? { status: "pass" }
-          : { status: "review", evidence: `${total - tagged} of ${total} links missing GA4 tagging.` };
+          ? { status: "pass", details }
+          : {
+              status: "review",
+              evidence: `${total - tagged} of ${total} links missing GA4 tagging${scopeNote}.`,
+              details,
+            };
     }
   }
 
@@ -375,34 +392,61 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     if (imgs.length === 0) {
       map["tech-alt-text"] = { status: "na" };
     } else {
+      const imgItems: QaDetailItem[] = [];
       const missing = imgs.filter((img) => {
         const alt = img.getAttribute("alt");
         const aria = img.getAttribute("aria-label");
         const role = (img.getAttribute("role") ?? "").toLowerCase();
         const hidden = (img.getAttribute("aria-hidden") ?? "").toLowerCase();
         const decorative = role === "presentation" || hidden === "true";
-        return !decorative && !alt && !aria;
+        const isMissing = !decorative && !alt && !aria;
+        imgItems.push({
+          primary: img.getAttribute("src") ?? "(no src)",
+          secondary: alt ?? aria ?? "",
+          flag: isMissing ? "fail" : "ok",
+          note: decorative
+            ? "decorative (exempt)"
+            : alt
+              ? "has alt text"
+              : aria
+                ? "has aria-label"
+                : "MISSING alt text",
+        });
+        return isMissing;
       });
+      const details: QaCheckDetails = { kind: "images", items: imgItems };
       map["tech-alt-text"] =
         missing.length === 0
-          ? { status: "pass" }
-          : { status: "fail", evidence: `${missing.length} image(s) missing alt text.` };
+          ? { status: "pass", details }
+          : { status: "fail", evidence: `${missing.length} image(s) missing alt text${scopeNote}.`, details };
     }
   }
 
   // tech-image-size — light static heuristic; full check is Phase 2
   {
     const imgs = root.querySelectorAll("img");
+    const sizeItems: QaDetailItem[] = [];
     const huge = imgs.filter((img) => {
       const w = parseInt(img.getAttribute("width") ?? "", 10);
       const styleW = /width:\s*(\d+)px/i.exec(img.getAttribute("style") ?? "");
       const styleWidth = styleW ? parseInt(styleW[1], 10) : NaN;
-      return (Number.isFinite(w) && w > 3000) || (Number.isFinite(styleWidth) && styleWidth > 3000);
+      const declared = Number.isFinite(w) ? w : Number.isFinite(styleWidth) ? styleWidth : NaN;
+      const isHuge = Number.isFinite(declared) && declared > 3000;
+      sizeItems.push({
+        primary: img.getAttribute("src") ?? "(no src)",
+        secondary: img.getAttribute("alt") ?? "",
+        flag: isHuge ? "fail" : "ok",
+        note: Number.isFinite(declared)
+          ? `declared ${declared}px wide`
+          : "no width declared — needs rendered check (Phase 2)",
+      });
+      return isHuge;
     });
+    const details: QaCheckDetails = { kind: "oversized-images", items: sizeItems };
     map["tech-image-size"] =
       huge.length > 0
-        ? { status: "fail", evidence: `${huge.length} image(s) declared wider than 3000px.` }
-        : { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+        ? { status: "fail", evidence: `${huge.length} image(s) declared wider than 3000px${scopeNote}.`, details }
+        : { status: "review", evidence: "Requires rendered-browser check (Phase 2).", details };
   }
 
   // Phase 2 / manual placeholders — set honestly
