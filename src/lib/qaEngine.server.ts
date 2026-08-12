@@ -86,6 +86,51 @@ function visibleText(root: HTMLElement): string {
   return root.text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Isolate the main content region so QA ignores header, footer, and nav.
+ * Strategy: on a clone, remove all chrome (header/footer/nav/offer aside),
+ * then prefer an explicit content container in priority order. Returns the
+ * scoped node plus a label of which region was used (for the report).
+ */
+function scopeToContent(fullHtml: string): { region: string; node: HTMLElement } {
+  const clone = parse(fullHtml);
+
+  const stripSelectors = [
+    "header",
+    "footer",
+    "nav",
+    "script",
+    "style",
+    "noscript",
+    ".headerWrapper",
+    ".sitewide-footer-content",
+    '[aria-label="Offers"]',
+    '[role="banner"]',
+    '[role="contentinfo"]',
+    '[role="navigation"]',
+    '[class*="header"]',
+    '[class*="footer"]',
+    '[class*="navbar"]',
+    '[id*="nav"]',
+  ];
+  stripSelectors.forEach((sel) => {
+    try {
+      clone.querySelectorAll(sel).forEach((el) => el.remove());
+    } catch {
+      /* invalid selector on some parsers — skip */
+    }
+  });
+
+  const preferred = ["#content-main", "#content", "main", '[role="main"]', "article"];
+  for (const sel of preferred) {
+    const el = clone.querySelector(sel);
+    if (el && el.text.replace(/\s+/g, "").length > 0) {
+      return { region: sel, node: el };
+    }
+  }
+  return { region: "body (fallback)", node: clone };
+}
+
 function absolutize(href: string, base: string): string | null {
   try {
     return new URL(href, base).toString();
@@ -155,13 +200,15 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(map) };
   }
 
-  const root = parse(page.html);
-  const rootForText = parse(page.html);
-  const text = visibleText(rootForText);
+  // Scope to main content — header, footer, and nav are explicitly NOT QA'd.
+  const { region, node: root } = scopeToContent(page.html);
+  const scopedHtml = root.toString();
+  const text = visibleText(parse(scopedHtml));
   const lowerText = text.toLowerCase();
-  const lowerHtml = page.html.toLowerCase();
+  const lowerHtml = scopedHtml.toLowerCase();
 
   const map: Record<string, { status: CheckStatus; evidence?: string }> = {};
+  const scopeNote = ` (scoped to ${region})`;
 
   // content-single-h1
   {
@@ -169,7 +216,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     map["content-single-h1"] =
       count === 1
         ? { status: "pass" }
-        : { status: "fail", evidence: `${count} h1 element${count === 1 ? "" : "s"} found.` };
+        : { status: "fail", evidence: `${count} h1 element${count === 1 ? "" : "s"} found${scopeNote}.` };
   }
 
   // content-lorem
@@ -296,7 +343,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
         evidence: `Could not fetch reference page${ref.error ? `: ${ref.error}` : ` (HTTP ${ref.status})`}.`,
       };
     } else {
-      const refRoot = parse(ref.html);
+      const refRoot = scopeToContent(ref.html).node;
       const collect = (r: HTMLElement, base: string) =>
         new Set(
           r
