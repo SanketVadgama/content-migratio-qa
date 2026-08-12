@@ -270,6 +270,16 @@ function DetailList({ details }: { details: QaCheckDetails }) {
                 {details.kind === "links" ? "(no link text)" : "(no alt text)"}
               </p>
             )}
+            {item.extra && item.extra.length > 0 ? (
+              <div className="mt-1.5 space-y-0.5 rounded border border-border/50 bg-muted/40 p-2">
+                <p className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Full GA4 tagging</p>
+                {item.extra.map((line, j) => (
+                  <p key={j} className="break-all font-mono text-[11px] leading-snug text-foreground/80">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ) : null}
           </div>
           {item.note ? (
             <span
