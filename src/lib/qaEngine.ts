@@ -1,223 +1,552 @@
-// Single integration point for the automated QA backend.
-// Phase 1: real static-HTML analysis via a TanStack Start server function.
+// Phase 1 automated QA engine — runs on the server (Nitro) via TanStack Start.
+// Fetches public page HTML, parses it with node-html-parser (no browser), and
+// resolves every check in CHECK_DEFINITIONS with real logic where statically
+// decidable, or an honest "review"/"na" where a rendered browser (Phase 2) is
+// required. One bad page never fails the batch.
 
-export type PageType = "homepage" | "content-migration" | "other";
+import { createServerFn } from "@tanstack/react-start";
+import { parse, type HTMLElement } from "node-html-parser";
+import {
+  checksForType,
+  DEALER_NAME_BLOCKLIST,
+  type CheckStatus,
+  type QaBatchRow,
+  type QaCheck,
+  type QaCheckDetails,
+  type QaDetailItem,
+  type QaPageResult,
+} from "./qaEngine";
 
-export type CheckStatus = "pass" | "fail" | "review" | "na";
+const USER_AGENT = "Mozilla/5.0 (compatible; MigrationQA/1.0)";
+const PAGE_TIMEOUT_MS = 15_000;
+const MAX_LINKS_PER_PAGE = 100;
+const PAGE_CONCURRENCY = 4;
+const LINK_CONCURRENCY = 6;
 
-export type CheckCategory =
-  | "Responsive / Layout"
-  | "Content"
-  | "Links / Tracking"
-  | "Technical / Accessibility"
-  | "Final Review";
+// Optional Phase 2 render service (self-hosted Playwright). When RENDER_SERVICE_URL
+// is set, the responsive checks call it for real measurements; otherwise they fall
+// back to honest "review" placeholders so the app still works without it.
+const RENDER_SERVICE_URL = process.env.RENDER_SERVICE_URL || "";
+const RENDER_SERVICE_TOKEN = process.env.RENDER_SERVICE_TOKEN || "";
 
-/** One row of user input from the batch table. */
-export interface QaBatchRow {
-  id: string;
-  pageUrl: string;
-  referenceUrl?: string | undefined;
-  pageType: PageType;
+interface RenderCheck {
+  pass: boolean | null;
+  detail: string;
+}
+interface RenderResults {
+  overflow: RenderCheck;
+  header1800: RenderCheck;
+  stacking: RenderCheck;
 }
 
-/** Structured inspection data shown on-screen under a check (never in the PDF/download). */
-export interface QaCheckDetails {
-  /** Kind of detail payload, so the UI knows how to render it. */
-  kind: "images" | "links" | "oversized-images";
-  items: QaDetailItem[];
+async function callRenderService(url: string): Promise<RenderResults | null> {
+  if (!RENDER_SERVICE_URL) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45_000);
+    const res = await fetch(`${RENDER_SERVICE_URL.replace(/\/$/, "")}/render`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, token: RENDER_SERVICE_TOKEN }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const data = (await res.json()) as { ok: boolean; results?: RenderResults };
+    return data.ok && data.results ? data.results : null;
+  } catch {
+    return null;
+  }
 }
 
-export interface QaDetailItem {
-  /** For images: the src. For links: the href. */
-  primary: string;
-  /** For images: the alt text (or empty). For links: the visible link text. */
-  secondary?: string;
-  /** Per-item status flag, e.g. "tagged" / "untagged" / "missing-alt" / "oversized". */
-  flag?: "ok" | "warn" | "fail";
-  /** Short human note, e.g. "no alt text" or "declared 4000px wide". */
-  note?: string;
-  /** Extra lines of detail, e.g. the full list of GA4 data-dotagging attributes on a link. */
-  extra?: string[] | undefined;
+function renderCheckToStatus(c: RenderCheck): { status: CheckStatus; evidence?: string } {
+  if (c.pass === true) return { status: "pass" };
+  if (c.pass === false) return { status: "fail", evidence: c.detail };
+  return { status: "review", evidence: c.detail };
 }
 
-/** One automated check result for a page. */
-export interface QaCheck {
-  id: string;
-  category: CheckCategory;
-  label: string;
-  status: CheckStatus;
-  /** Human-readable supporting detail, present for fail/review checks. */
-  evidence?: string | undefined;
-  /** Optional structured inspection data — shown on-screen only, omitted from downloads. */
-  details?: QaCheckDetails | undefined;
+interface FetchedPage {
+  ok: boolean;
+  status: number;
+  html: string;
+  error?: string;
 }
 
-/** Automated QA result for a single page. */
-export interface QaPageResult {
-  pageUrl: string;
-  pageType: PageType;
-  checks: QaCheck[];
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = PAGE_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      redirect: "follow",
+      headers: { "User-Agent": USER_AGENT, ...(init.headers ?? {}) },
+      signal: controller.signal,
+      ...init,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-export const CATEGORY_ORDER: CheckCategory[] = [
-  "Responsive / Layout",
-  "Content",
-  "Links / Tracking",
-  "Technical / Accessibility",
-  "Final Review",
-];
+async function fetchPage(url: string): Promise<FetchedPage> {
+  try {
+    const res = await fetchWithTimeout(url);
+    const html = await res.text();
+    return { ok: res.ok, status: res.status, html };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      html: "",
+      error: err instanceof Error ? err.message : "Unknown fetch error",
+    };
+  }
+}
 
-/** Master catalog of every check the engine knows how to evaluate. */
-export const CHECK_CATALOG: Record<string, { category: CheckCategory; label: string }> = {
-  // Responsive / Layout
-  "resp-mobile-tablet": {
-    category: "Responsive / Layout",
-    label: "Mobile and tablet views checked for responsiveness and broken content",
-  },
-  "resp-image-title-stacking": {
-    category: "Responsive / Layout",
-    label: "Correct image → title → content stacking on mobile",
-  },
-  "resp-mobile-360": {
-    category: "Responsive / Layout",
-    label: "Mobile layout checked down to 360px screen width",
-  },
-  "resp-header-1800": {
-    category: "Responsive / Layout",
-    label: "Header checked at 1800px+ for overlap and navigation positioning",
-  },
-  "resp-overflow": { category: "Responsive / Layout", label: "No horizontal overflow / scrollbar" },
-  // Content
-  "content-dealer-names": {
-    category: "Content",
-    label: 'Placeholder dealer names such as "DealerOn XXX", "Kerndt", or "Rothbard" have been replaced',
-  },
-  "content-lorem": {
-    category: "Content",
-    label: "Lorem ipsum, class placeholder text, and test/danger text have been removed",
-  },
-  "content-spelling": {
-    category: "Content",
-    label: "Spacing and spelling issues from copied/pasted content have been corrected",
-  },
-  "content-empty-sections": { category: "Content", label: "Empty or unused content sections are hidden" },
-  "content-dealer-logo": { category: "Content", label: "Dealer logo is properly cropped and resized" },
-  "content-links-carried-over": {
-    category: "Content",
-    label: "All links from the reference/original page have been carried over",
-  },
-  "content-single-h1": { category: "Content", label: "Exactly one H1 is present" },
-  // Links / Tracking
-  "links-ga4": { category: "Links / Tracking", label: "GA4 tagging has been added to applicable internal/external links" },
-  "links-404": { category: "Links / Tracking", label: "No links lead to a 404 page" },
-  // Technical / Accessibility
-  "tech-element-order": { category: "Technical / Accessibility", label: "Element order has been manually reviewed/updated" },
-  "tech-custom-forms": { category: "Technical / Accessibility", label: "Custom forms have been run through the tagging generator" },
-  "tech-dealer-codes": { category: "Technical / Accessibility", label: "Dealer Info Replacement codes are used where possible" },
-  "tech-image-size": {
-    category: "Technical / Accessibility",
-    label: "Oversized images have been manually resized or use an appropriate width setting",
-  },
-  "tech-alt-text": {
-    category: "Technical / Accessibility",
-    label: "Images contain descriptive alt text or appropriate aria-label/background image treatment",
-  },
-  // Final Review
-  "final-case-description": { category: "Final Review", label: "Case description has been re-read" },
-  "final-special-requests": { category: "Final Review", label: "All special requests have been completed or addressed" },
-};
+/** Run tasks with a fixed concurrency limit, preserving input order. */
+async function pool<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+function visibleText(root: HTMLElement): string {
+  // Drop script/style so their contents don't pollute text checks.
+  root.querySelectorAll("script,style,noscript").forEach((n) => n.remove());
+  return root.text.replace(/\s+/g, " ").trim();
+}
 
 /**
- * Per-page-type checklists, matching the reference QA tool exactly.
- * Each list is the ordered set of check ids that apply to that page type.
+ * Isolate the main content region so QA ignores header, footer, and nav.
+ * Strategy: on a clone, remove all chrome (header/footer/nav/offer aside),
+ * then prefer an explicit content container in priority order. Returns the
+ * scoped node plus a label of which region was used (for the report).
  */
-export const CHECKLIST_BY_TYPE: Record<PageType, string[]> = {
-  homepage: [
-    "resp-mobile-tablet",
-    "resp-header-1800",
-    "resp-overflow",
-    "content-dealer-names",
-    "content-lorem",
-    "content-spelling",
-    "content-empty-sections",
-    "content-dealer-logo",
-    "content-single-h1",
-    "links-ga4",
-    "links-404",
-    "tech-element-order",
-    "tech-dealer-codes",
-    "tech-image-size",
-    "tech-alt-text",
-    "final-case-description",
-    "final-special-requests",
-  ],
-  "content-migration": [
-    "resp-mobile-tablet",
-    "resp-image-title-stacking",
-    "resp-mobile-360",
-    "resp-overflow",
-    "content-single-h1",
-    "content-spelling",
-    "content-links-carried-over",
-    "links-ga4",
-    "links-404",
-    "tech-element-order",
-    "tech-custom-forms",
-    "tech-dealer-codes",
-    "tech-image-size",
-    "tech-alt-text",
-    "final-case-description",
-    "final-special-requests",
-  ],
-  other: [
-    "resp-mobile-tablet",
-    "resp-overflow",
-    "content-single-h1",
-    "content-lorem",
-    "content-spelling",
-    "content-empty-sections",
-    "links-ga4",
-    "links-404",
-    "tech-alt-text",
-    "tech-image-size",
-    "final-case-description",
-    "final-special-requests",
-  ],
-};
+function scopeToContent(fullHtml: string): { region: string; node: HTMLElement } {
+  const clone = parse(fullHtml);
 
-/** Returns the ordered check definitions for a given page type. */
-export function checksForType(type: PageType): { id: string; category: CheckCategory; label: string }[] {
-  return CHECKLIST_BY_TYPE[type].map((id) => ({
-    id,
-    category: CHECK_CATALOG[id].category,
-    label: CHECK_CATALOG[id].label,
-  }));
+  const stripSelectors = [
+    // Chrome by semantic tag — but NOT the top-level document landmarks only;
+    // these are safe because content headings never live inside <header>/<footer>/<nav>.
+    "header",
+    "footer",
+    "nav",
+    "script",
+    "style",
+    "noscript",
+    // Known DealerOn/LeadScience chrome wrappers (specific, not substring-matched).
+    ".headerWrapper",
+    ".sitewide-footer-content",
+    '[aria-label="Offers"]',
+    '[role="banner"]',
+    '[role="contentinfo"]',
+    '[role="navigation"]',
+    "#nav",
+    "#nav-sidebar",
+    "#navbar-header",
+    "#horizontal-navbar-collapse",
+    "#vertical-navbar-collapse",
+  ];
+  stripSelectors.forEach((sel) => {
+    try {
+      clone.querySelectorAll(sel).forEach((el) => el.remove());
+    } catch {
+      /* invalid selector on some parsers — skip */
+    }
+  });
+
+  const preferred = ["#content-main", "#content", "main", '[role="main"]', "article"];
+  for (const sel of preferred) {
+    const el = clone.querySelector(sel);
+    if (el && el.text.replace(/\s+/g, "").length > 0) {
+      return { region: sel, node: el };
+    }
+  }
+  return { region: "body (fallback)", node: clone };
 }
 
-/** Flat union of all known checks (used by the engine's evaluation map). */
-export const CHECK_DEFINITIONS: { id: string; category: CheckCategory; label: string }[] = Object.entries(
-  CHECK_CATALOG,
-).map(([id, def]) => ({ id, category: def.category, label: def.label }));
-
-/** Editable blocklist for placeholder dealer-name detection (case-insensitive). */
-export const DEALER_NAME_BLOCKLIST: string[] = [
-  "DealerOn XXX",
-  "Kerndt",
-  "Rothbard",
-  "Dealer Name Here",
-  "XXXX",
-  "Lorem Dealer",
-];
-
-/**
- * Runs the automated QA batch.
- *
- * Delegates to the TanStack Start server function (`runQaBatchServer`), which
- * runs on the server and can fetch arbitrary public URLs without CORS issues.
- * Input (`QaBatchRow[]`) and output (`QaPageResult[]`) contracts are unchanged,
- * so the UI needs no modification.
- */
-export async function runQaBatch(rows: QaBatchRow[]): Promise<QaPageResult[]> {
-  const { runQaBatchServer } = await import("./qaEngine.server");
-  return runQaBatchServer({ data: rows });
+function absolutize(href: string, base: string): string | null {
+  try {
+    return new URL(href, base).toString();
+  } catch {
+    return null;
+  }
 }
+
+function isCheckableLink(href: string): boolean {
+  const h = href.trim().toLowerCase();
+  if (!h) return false;
+  if (h.startsWith("#")) return false;
+  if (h.startsWith("mailto:")) return false;
+  if (h.startsWith("tel:")) return false;
+  if (h.startsWith("javascript:")) return false;
+  return true;
+}
+
+function normalizeDest(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return `${u.origin}${u.pathname.replace(/\/$/, "")}${u.search}`;
+  } catch {
+    return url;
+  }
+}
+
+async function checkLink(url: string): Promise<number> {
+  try {
+    let res = await fetchWithTimeout(url, { method: "HEAD" }, PAGE_TIMEOUT_MS);
+    if (res.status === 405 || res.status === 501) {
+      res = await fetchWithTimeout(url, { method: "GET" }, PAGE_TIMEOUT_MS);
+    }
+    return res.status;
+  } catch {
+    return 0; // network failure — treat as unreachable
+  }
+}
+
+function buildChecks(
+  pageType: QaBatchRow["pageType"],
+  map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }>,
+): QaCheck[] {
+  return checksForType(pageType).map((def) => {
+    const r = map[def.id] ?? { status: "review" as CheckStatus, evidence: "Not evaluated." };
+    return {
+      id: def.id,
+      category: def.category,
+      label: def.label,
+      status: r.status,
+      evidence: r.status === "fail" || r.status === "review" ? r.evidence : undefined,
+      details: r.details,
+    } satisfies QaCheck;
+  });
+}
+
+async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
+  const page = await fetchPage(row.pageUrl);
+
+  // Whole page unreachable → mark everything review, never crash the batch.
+  if (!page.ok || !page.html) {
+    const reason = page.error
+      ? `Could not fetch page: ${page.error}`
+      : `Could not fetch page (HTTP ${page.status}).`;
+    const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
+    checksForType(row.pageType).forEach((def, i) => {
+      map[def.id] = { status: "review", evidence: i === 0 ? reason : "Page not analyzed." };
+    });
+    return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
+  }
+
+  // Scope to main content — header, footer, and nav are explicitly NOT QA'd.
+  const { region, node: root } = scopeToContent(page.html);
+  const scopedHtml = root.toString();
+  const text = visibleText(parse(scopedHtml));
+  const lowerText = text.toLowerCase();
+  const lowerHtml = scopedHtml.toLowerCase();
+
+  const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
+  const scopeNote = ` (scoped to ${region})`;
+
+  // content-single-h1
+  {
+    const count = root.querySelectorAll("h1").length;
+    map["content-single-h1"] =
+      count === 1
+        ? { status: "pass" }
+        : { status: "fail", evidence: `${count} h1 element${count === 1 ? "" : "s"} found${scopeNote}.` };
+  }
+
+  // content-lorem
+  {
+    const phrases = ["lorem ipsum", "dolor sit amet", "your text here", "insert text", "sample text"];
+    const hit = phrases.find((p) => lowerText.includes(p));
+    map["content-lorem"] = hit
+      ? { status: "fail", evidence: `Placeholder copy found: "${hit}".` }
+      : { status: "pass" };
+  }
+
+  // content-dealer-names
+  {
+    const hits = DEALER_NAME_BLOCKLIST.filter((term) => lowerHtml.includes(term.toLowerCase()));
+    map["content-dealer-names"] = hits.length
+      ? { status: "fail", evidence: `Placeholder dealer text found: ${hits.join(", ")}.` }
+      : { status: "pass" };
+  }
+
+  // content-spelling (heuristic only)
+  {
+    const doubleSpaces = (text.match(/ {2,}/g) ?? []).length;
+    const repeatedPunct = (text.match(/([!?.]){2,}/g) ?? []).length;
+    const total = doubleSpaces + repeatedPunct;
+    map["content-spelling"] =
+      total > 0
+        ? {
+            status: "review",
+            evidence: `${doubleSpaces} double-space and ${repeatedPunct} repeated-punctuation occurrence(s).`,
+          }
+        : { status: "pass" };
+  }
+
+  // content-empty-sections
+  {
+    const candidates = [
+      ...root.querySelectorAll("section"),
+      ...root.querySelectorAll('div[class*="section"]'),
+    ];
+    const empty = candidates.filter((el) => {
+      const inlineStyle = (el.getAttribute("style") ?? "").replace(/\s+/g, "").toLowerCase();
+      if (inlineStyle.includes("display:none")) return false;
+      const hasMedia = el.querySelector("img") || el.querySelector("iframe");
+      const hasText = el.text.replace(/\s+/g, "").length > 0;
+      return !hasMedia && !hasText;
+    });
+    map["content-empty-sections"] =
+      empty.length > 0
+        ? { status: "review", evidence: `${empty.length} empty/unused section(s) found.` }
+        : { status: "pass" };
+  }
+
+  // links collection (shared)
+  const anchors = root.querySelectorAll("a");
+  const rawHrefs = anchors
+    .map((a) => a.getAttribute("href") ?? "")
+    .filter((h) => isCheckableLink(h));
+
+  // links-ga4
+  {
+    if (anchors.length === 0) {
+      map["links-ga4"] = { status: "na" };
+    } else {
+      const linkItems: QaDetailItem[] = [];
+      let tagged = 0;
+      anchors.forEach((a) => {
+        const attrs = a.rawAttrs;
+        const attrsLower = attrs.toLowerCase();
+        const href = a.getAttribute("href") ?? "";
+        const onclick = (a.getAttribute("onclick") ?? "").toLowerCase();
+        const isTagged =
+          attrsLower.includes("data-dotagging") ||
+          attrsLower.includes("ga4") ||
+          attrsLower.includes("gtm") ||
+          onclick.includes("gtag") ||
+          onclick.includes("datalayer") ||
+          href.toLowerCase().includes("utm_");
+        if (isTagged) tagged++;
+        const linkText = a.text.replace(/\s+/g, " ").trim();
+
+        // Collect every data-dotagging-* attribute so the report can show the full GA4 tagging.
+        const ga4Attrs: string[] = [];
+        const attrRegex = /(data-dotagging-[a-z-]+)="([^"]*)"/gi;
+        let m: RegExpExecArray | null;
+        while ((m = attrRegex.exec(attrs)) !== null) {
+          ga4Attrs.push(`${m[1]}="${m[2]}"`);
+        }
+
+        linkItems.push({
+          primary: href || "(no href)",
+          secondary: linkText || "(no text)",
+          flag: isTagged ? "ok" : "warn",
+          note: isTagged ? "GA4 tagged" : "no GA4 tagging",
+          // Full GA4 tagging detail (all dotagging attributes on this link).
+          extra: ga4Attrs.length ? ga4Attrs : undefined,
+        });
+      });
+      const total = anchors.length;
+      const details: QaCheckDetails = { kind: "links", items: linkItems };
+      map["links-ga4"] =
+        tagged === total
+          ? { status: "pass", details }
+          : {
+              status: "review",
+              evidence: `${total - tagged} of ${total} links missing GA4 tagging${scopeNote}.`,
+              details,
+            };
+    }
+  }
+
+  // links-404
+  {
+    const absolute = rawHrefs
+      .map((h) => absolutize(h, row.pageUrl))
+      .filter((u): u is string => !!u && /^https?:\/\//i.test(u));
+    const unique = Array.from(new Set(absolute.map(normalizeDest)));
+    const capped = unique.length > MAX_LINKS_PER_PAGE;
+    const toCheck = unique.slice(0, MAX_LINKS_PER_PAGE);
+
+    if (toCheck.length === 0) {
+      map["links-404"] = { status: "pass" };
+    } else {
+      const statuses = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
+        url: u,
+        status: await checkLink(u),
+      }));
+      const broken = statuses.filter((s) => s.status >= 400 || s.status === 0);
+      if (broken.length === 0) {
+        map["links-404"] = { status: "pass" };
+      } else {
+        const sample = broken.slice(0, 5).map((b) => `${b.url} (${b.status || "unreachable"})`);
+        map["links-404"] = {
+          status: "fail",
+          evidence:
+            `${broken.length} broken link(s) found: ${sample.join("; ")}` +
+            (capped ? ` — only first ${MAX_LINKS_PER_PAGE} links checked.` : "."),
+        };
+      }
+    }
+  }
+
+  // links-carried-over (needs reference)
+  if (!row.referenceUrl) {
+    map["content-links-carried-over"] = { status: "na" };
+  } else {
+    const ref = await fetchPage(row.referenceUrl);
+    if (!ref.ok || !ref.html) {
+      map["content-links-carried-over"] = {
+        status: "review",
+        evidence: `Could not fetch reference page${ref.error ? `: ${ref.error}` : ` (HTTP ${ref.status})`}.`,
+      };
+    } else {
+      const refRoot = scopeToContent(ref.html).node;
+      const collect = (r: HTMLElement, base: string) =>
+        new Set(
+          r
+            .querySelectorAll("a")
+            .map((a) => a.getAttribute("href") ?? "")
+            .filter(isCheckableLink)
+            .map((h) => absolutize(h, base))
+            .filter((u): u is string => !!u && /^https?:\/\//i.test(u))
+            .map(normalizeDest),
+        );
+      const refSet = collect(refRoot, row.referenceUrl);
+      const newSet = collect(root, row.pageUrl);
+      const missing = [...refSet].filter((u) => !newSet.has(u));
+      map["content-links-carried-over"] =
+        missing.length === 0
+          ? { status: "pass" }
+          : {
+              status: "review",
+              evidence: `${missing.length} link(s) on reference not found on new page: ${missing
+                .slice(0, 5)
+                .join("; ")}.`,
+            };
+    }
+  }
+
+  // tech-alt-text
+  {
+    const imgs = root.querySelectorAll("img");
+    if (imgs.length === 0) {
+      map["tech-alt-text"] = { status: "na" };
+    } else {
+      const imgItems: QaDetailItem[] = [];
+      const missing = imgs.filter((img) => {
+        const alt = img.getAttribute("alt");
+        const aria = img.getAttribute("aria-label");
+        const role = (img.getAttribute("role") ?? "").toLowerCase();
+        const hidden = (img.getAttribute("aria-hidden") ?? "").toLowerCase();
+        const decorative = role === "presentation" || hidden === "true";
+        const isMissing = !decorative && !alt && !aria;
+        imgItems.push({
+          primary: img.getAttribute("src") ?? "(no src)",
+          secondary: alt ?? aria ?? "",
+          flag: isMissing ? "fail" : "ok",
+          note: decorative
+            ? "decorative (exempt)"
+            : alt
+              ? "has alt text"
+              : aria
+                ? "has aria-label"
+                : "MISSING alt text",
+        });
+        return isMissing;
+      });
+      const details: QaCheckDetails = { kind: "images", items: imgItems };
+      map["tech-alt-text"] =
+        missing.length === 0
+          ? { status: "pass", details }
+          : { status: "fail", evidence: `${missing.length} image(s) missing alt text${scopeNote}.`, details };
+    }
+  }
+
+  // tech-image-size — light static heuristic; full check is Phase 2
+  {
+    const imgs = root.querySelectorAll("img");
+    const sizeItems: QaDetailItem[] = [];
+    const huge = imgs.filter((img) => {
+      const w = parseInt(img.getAttribute("width") ?? "", 10);
+      const styleW = /width:\s*(\d+)px/i.exec(img.getAttribute("style") ?? "");
+      const styleWidth = styleW ? parseInt(styleW[1], 10) : NaN;
+      const declared = Number.isFinite(w) ? w : Number.isFinite(styleWidth) ? styleWidth : NaN;
+      const isHuge = Number.isFinite(declared) && declared > 3000;
+      sizeItems.push({
+        primary: img.getAttribute("src") ?? "(no src)",
+        secondary: img.getAttribute("alt") ?? "",
+        flag: isHuge ? "fail" : "ok",
+        note: Number.isFinite(declared)
+          ? `declared ${declared}px wide`
+          : "no width declared — needs rendered check (Phase 2)",
+      });
+      return isHuge;
+    });
+    const details: QaCheckDetails = { kind: "oversized-images", items: sizeItems };
+    map["tech-image-size"] =
+      huge.length > 0
+        ? { status: "fail", evidence: `${huge.length} image(s) declared wider than 3000px${scopeNote}.`, details }
+        : { status: "review", evidence: "Requires rendered-browser check (Phase 2).", details };
+  }
+
+  // Responsive / Layout — real measurements via the render service when configured,
+  // otherwise honest placeholders.
+  const render = await callRenderService(row.pageUrl);
+  if (render) {
+    const overflow = renderCheckToStatus(render.overflow);
+    const header = renderCheckToStatus(render.header1800);
+    const stacking = renderCheckToStatus(render.stacking);
+    map["resp-overflow"] = overflow;
+    map["resp-header-1800"] = header;
+    map["resp-mobile-tablet"] = stacking;
+    map["resp-mobile-360"] = stacking;
+    map["resp-image-title-stacking"] = {
+      status: stacking.status === "pass" ? "review" : stacking.status,
+      evidence:
+        stacking.status === "pass"
+          ? "Fits at 360px; image→title→content order still needs a manual glance."
+          : stacking.evidence,
+    };
+  } else {
+    map["resp-mobile-tablet"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-overflow"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-header-1800"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-image-title-stacking"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+    map["resp-mobile-360"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+  }
+
+  // Manual placeholders — set honestly
+  map["content-dealer-logo"] = { status: "review", evidence: "Manual review — logo crop/resize needs a visual check." };
+  map["tech-element-order"] = { status: "review", evidence: "Manual review — element order is intent-dependent." };
+  map["tech-custom-forms"] = { status: "review", evidence: "Manual review — process check, not a page-state check." };
+  map["tech-dealer-codes"] = { status: "review", evidence: "Manual review — depends on what could be templated." };
+  map["final-case-description"] = { status: "review", evidence: "Manual confirmation required." };
+  map["final-special-requests"] = { status: "review", evidence: "Manual confirmation required." };
+
+  return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
+}
+
+export const runQaBatchServer = createServerFn({ method: "POST" })
+  .validator((rows: QaBatchRow[]) => rows)
+  .handler(async ({ data }) => {
+    return pool(data, PAGE_CONCURRENCY, (row) => analyzePage(row));
+  });
