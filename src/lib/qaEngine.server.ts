@@ -7,7 +7,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { parse, type HTMLElement } from "node-html-parser";
 import {
-  CHECK_CATALOG,
   checksForType,
   DEALER_NAME_BLOCKLIST,
   type CheckStatus,
@@ -16,7 +15,7 @@ import {
   type QaCheckDetails,
   type QaDetailItem,
   type QaPageResult,
-} from "./qaEngine";
+} from "./qaEngineTypes";
 
 const USER_AGENT = "Mozilla/5.0 (compatible; MigrationQA/1.0)";
 const PAGE_TIMEOUT_MS = 15_000;
