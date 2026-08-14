@@ -246,15 +246,23 @@ function DetailList({ details }: { details: QaCheckDetails }) {
           className="flex items-start gap-3 rounded-md border border-border/60 bg-card px-3 py-2"
         >
           {isImages ? (
-            <img
-              src={item.primary}
-              alt=""
-              className="size-10 shrink-0 rounded object-cover"
-              loading="lazy"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-              }}
-            />
+            <a
+              href={item.primary}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0"
+              title="Open full-size image"
+            >
+              <img
+                src={item.primary}
+                alt=""
+                className="size-10 shrink-0 cursor-zoom-in rounded object-cover ring-1 ring-border transition hover:ring-2 hover:ring-brand"
+                loading="lazy"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+                }}
+              />
+            </a>
           ) : null}
           <div className="min-w-0 flex-1">
             <p className="truncate font-mono text-xs text-foreground" title={item.primary}>
