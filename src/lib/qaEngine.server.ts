@@ -206,6 +206,66 @@ function normalizeDest(url: string): string {
   }
 }
 
+// Images larger than this (in bytes) are flagged as too heavy.
+const IMAGE_SIZE_LIMIT_BYTES = 150 * 1024; // 150KB
+const IMAGE_SIZE_CONCURRENCY = 6;
+
+/**
+ * Fetch an image's byte size. Tries a HEAD request for Content-Length first
+ * (cheap); if that's missing, falls back to a GET and measures the body.
+ * Returns null if the size can't be determined.
+ */
+async function imageByteSize(url: string): Promise<number | null> {
+  try {
+    const head = await fetchWithTimeout(url, { method: "HEAD" }, PAGE_TIMEOUT_MS);
+    const len = head.headers.get("content-length");
+    if (len && /^\d+$/.test(len)) return parseInt(len, 10);
+  } catch {
+    /* fall through to GET */
+  }
+  try {
+    const res = await fetchWithTimeout(url, { method: "GET" }, PAGE_TIMEOUT_MS);
+    const len = res.headers.get("content-length");
+    if (len && /^\d+$/.test(len)) return parseInt(len, 10);
+    const buf = await res.arrayBuffer();
+    return buf.byteLength;
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${Math.round(bytes / 1024)}KB`;
+}
+
+/**
+ * True if an element sits inside an accordion or FAQ region. Such links are
+ * intentionally excluded from GA4 tagging, so we skip them in that check.
+ * Walks up the ancestor chain looking for accordion/FAQ signals in class,
+ * id, role, or data attributes.
+ */
+function isInAccordionOrFaq(el: HTMLElement | null): boolean {
+  const signalRe = /(accordion|faq|collapse|collapsible|expander|disclosure)/i;
+  let node: HTMLElement | null = el;
+  let depth = 0;
+  while (node && depth < 25) {
+    const hay = (
+      (node.getAttribute("class") ?? "") +
+      " " +
+      (node.getAttribute("id") ?? "") +
+      " " +
+      (node.getAttribute("role") ?? "") +
+      " " +
+      node.rawAttrs
+    ).toLowerCase();
+    if (signalRe.test(hay)) return true;
+    node = node.parentNode as HTMLElement | null;
+    depth++;
+  }
+  return false;
+}
+
 async function checkLink(url: string): Promise<number> {
   try {
     let res = await fetchWithTimeout(url, { method: "HEAD" }, PAGE_TIMEOUT_MS);
@@ -332,11 +392,26 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     } else {
       const linkItems: QaDetailItem[] = [];
       let tagged = 0;
+      let applicable = 0;
       anchors.forEach((a) => {
         const attrs = a.rawAttrs;
         const attrsLower = attrs.toLowerCase();
         const href = a.getAttribute("href") ?? "";
         const onclick = (a.getAttribute("onclick") ?? "").toLowerCase();
+        const linkText = a.text.replace(/\s+/g, " ").trim();
+
+        // Accordion/FAQ links are intentionally not GA4-tagged — exclude them.
+        if (isInAccordionOrFaq(a)) {
+          linkItems.push({
+            primary: href || "(no href)",
+            secondary: linkText || "(no text)",
+            flag: "ok",
+            note: "excluded (accordion/FAQ)",
+          });
+          return;
+        }
+
+        applicable++;
         const isTagged =
           attrsLower.includes("data-dotagging") ||
           attrsLower.includes("ga4") ||
@@ -345,7 +420,6 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
           onclick.includes("datalayer") ||
           href.toLowerCase().includes("utm_");
         if (isTagged) tagged++;
-        const linkText = a.text.replace(/\s+/g, " ").trim();
 
         // Collect every data-dotagging-* attribute so the report can show the full GA4 tagging.
         const ga4Attrs: string[] = [];
@@ -364,16 +438,18 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
           extra: ga4Attrs.length ? ga4Attrs : undefined,
         });
       });
-      const total = anchors.length;
+      const total = applicable;
       const details: QaCheckDetails = { kind: "links", items: linkItems };
       map["links-ga4"] =
-        tagged === total
-          ? { status: "pass", details }
-          : {
-              status: "review",
-              evidence: `${total - tagged} of ${total} links missing GA4 tagging${scopeNote}.`,
-              details,
-            };
+        total === 0
+          ? { status: "pass", evidence: `All links excluded (accordion/FAQ)${scopeNote}.`, details }
+          : tagged === total
+            ? { status: "pass", details }
+            : {
+                status: "review",
+                evidence: `${total - tagged} of ${total} applicable links missing GA4 tagging${scopeNote}.`,
+                details,
+              };
     }
   }
 
@@ -445,31 +521,48 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     }
   }
 
+  // Shared image inventory: resolve each src to an absolute URL (so thumbnails
+  // load in the report) and fetch its byte size once (for the 150KB rule).
+  const imgEls = root.querySelectorAll("img");
+  interface ImgInfo {
+    el: (typeof imgEls)[number];
+    absSrc: string | null;
+    rawSrc: string;
+    bytes: number | null;
+  }
+  const imgInfos: ImgInfo[] = await pool(imgEls, IMAGE_SIZE_CONCURRENCY, async (img) => {
+    const rawSrc = img.getAttribute("src") ?? "";
+    const absSrc = rawSrc ? absolutize(rawSrc, row.pageUrl) : null;
+    const bytes = absSrc && /^https?:\/\//i.test(absSrc) ? await imageByteSize(absSrc) : null;
+    return { el: img, absSrc, rawSrc, bytes };
+  });
+
   // tech-alt-text
   {
-    const imgs = root.querySelectorAll("img");
-    if (imgs.length === 0) {
+    if (imgInfos.length === 0) {
       map["tech-alt-text"] = { status: "na" };
     } else {
       const imgItems: QaDetailItem[] = [];
-      const missing = imgs.filter((img) => {
+      const missing = imgInfos.filter(({ el: img, absSrc, rawSrc, bytes }) => {
         const alt = img.getAttribute("alt");
         const aria = img.getAttribute("aria-label");
         const role = (img.getAttribute("role") ?? "").toLowerCase();
         const hidden = (img.getAttribute("aria-hidden") ?? "").toLowerCase();
         const decorative = role === "presentation" || hidden === "true";
         const isMissing = !decorative && !alt && !aria;
+        const sizeNote = bytes != null ? ` · ${formatBytes(bytes)}` : "";
         imgItems.push({
-          primary: img.getAttribute("src") ?? "(no src)",
+          primary: absSrc ?? rawSrc ?? "(no src)",
           secondary: alt ?? aria ?? "",
           flag: isMissing ? "fail" : "ok",
-          note: decorative
-            ? "decorative (exempt)"
-            : alt
-              ? "has alt text"
-              : aria
-                ? "has aria-label"
-                : "MISSING alt text",
+          note:
+            (decorative
+              ? "decorative (exempt)"
+              : alt
+                ? "has alt text"
+                : aria
+                  ? "has aria-label"
+                  : "MISSING alt text") + sizeNote,
         });
         return isMissing;
       });
@@ -481,31 +574,56 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     }
   }
 
-  // tech-image-size — light static heuristic; full check is Phase 2
+  // tech-image-size — flags images over 150KB (real byte size) and, as a
+  // secondary heuristic, absurd declared widths. Rendered-dimension checks
+  // remain Phase 2.
   {
-    const imgs = root.querySelectorAll("img");
-    const sizeItems: QaDetailItem[] = [];
-    const huge = imgs.filter((img) => {
-      const w = parseInt(img.getAttribute("width") ?? "", 10);
-      const styleW = /width:\s*(\d+)px/i.exec(img.getAttribute("style") ?? "");
-      const styleWidth = styleW ? parseInt(styleW[1], 10) : NaN;
-      const declared = Number.isFinite(w) ? w : Number.isFinite(styleWidth) ? styleWidth : NaN;
-      const isHuge = Number.isFinite(declared) && declared > 3000;
-      sizeItems.push({
-        primary: img.getAttribute("src") ?? "(no src)",
-        secondary: img.getAttribute("alt") ?? "",
-        flag: isHuge ? "fail" : "ok",
-        note: Number.isFinite(declared)
-          ? `declared ${declared}px wide`
-          : "no width declared — needs rendered check (Phase 2)",
+    if (imgInfos.length === 0) {
+      map["tech-image-size"] = { status: "na" };
+    } else {
+      const sizeItems: QaDetailItem[] = [];
+      let overLimit = 0;
+      let hugeWidth = 0;
+      imgInfos.forEach(({ el: img, absSrc, rawSrc, bytes }) => {
+        const w = parseInt(img.getAttribute("width") ?? "", 10);
+        const styleW = /width:\s*(\d+)px/i.exec(img.getAttribute("style") ?? "");
+        const styleWidth = styleW ? parseInt(styleW[1], 10) : NaN;
+        const declared = Number.isFinite(w) ? w : Number.isFinite(styleWidth) ? styleWidth : NaN;
+
+        const isOver = bytes != null && bytes > IMAGE_SIZE_LIMIT_BYTES;
+        const isHugeWidth = Number.isFinite(declared) && declared > 3000;
+        if (isOver) overLimit++;
+        if (isHugeWidth) hugeWidth++;
+
+        const parts: string[] = [];
+        if (bytes != null) parts.push(formatBytes(bytes));
+        else parts.push("size unknown");
+        if (Number.isFinite(declared)) parts.push(`declared ${declared}px wide`);
+
+        sizeItems.push({
+          primary: absSrc ?? rawSrc ?? "(no src)",
+          secondary: img.getAttribute("alt") ?? "",
+          flag: isOver || isHugeWidth ? "fail" : "ok",
+          note:
+            (isOver ? `OVER 150KB — ${parts.join(" · ")}` : parts.join(" · ")) +
+            (isHugeWidth ? " · width too large" : ""),
+        });
       });
-      return isHuge;
-    });
-    const details: QaCheckDetails = { kind: "oversized-images", items: sizeItems };
-    map["tech-image-size"] =
-      huge.length > 0
-        ? { status: "fail", evidence: `${huge.length} image(s) declared wider than 3000px${scopeNote}.`, details }
-        : { status: "review", evidence: "Requires rendered-browser check (Phase 2).", details };
+      const details: QaCheckDetails = { kind: "oversized-images", items: sizeItems };
+      const problems = overLimit + hugeWidth;
+      if (problems > 0) {
+        const bits: string[] = [];
+        if (overLimit > 0) bits.push(`${overLimit} image(s) over 150KB`);
+        if (hugeWidth > 0) bits.push(`${hugeWidth} image(s) declared wider than 3000px`);
+        map["tech-image-size"] = { status: "fail", evidence: `${bits.join("; ")}${scopeNote}.`, details };
+      } else {
+        map["tech-image-size"] = {
+          status: "pass",
+          evidence: `All images within 150KB${scopeNote}. Rendered-dimension check is Phase 2.`,
+          details,
+        };
+      }
+    }
   }
 
   // Responsive / Layout — real measurements via the render service when configured,
