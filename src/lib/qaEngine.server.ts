@@ -90,9 +90,22 @@ async function fetchWithTimeout(
   }
 }
 
+/**
+ * Ensure a URL has a scheme. Users often paste "example.com/page" without
+ * "https://", which makes fetch() throw. Prepend https:// when missing.
+ * Protocol-relative ("//host/path") becomes https:. Returns trimmed input.
+ */
+function normalizeUrl(input: string): string {
+  const url = input.trim();
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("//")) return `https:${url}`;
+  return `https://${url}`;
+}
+
 async function fetchPage(url: string): Promise<FetchedPage> {
   try {
-    const res = await fetchWithTimeout(url);
+    const res = await fetchWithTimeout(normalizeUrl(url));
     const html = await res.text();
     return { ok: res.ok, status: res.status, html };
   } catch (err) {
@@ -296,7 +309,9 @@ function buildChecks(
 }
 
 async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
-  const page = await fetchPage(row.pageUrl);
+  const pageUrl = normalizeUrl(row.pageUrl);
+  const referenceUrl = row.referenceUrl ? normalizeUrl(row.referenceUrl) : "";
+  const page = await fetchPage(pageUrl);
 
   // Whole page unreachable → mark everything review, never crash the batch.
   if (!page.ok || !page.html) {
@@ -307,7 +322,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
     checksForType(row.pageType).forEach((def, i) => {
       map[def.id] = { status: "review", evidence: i === 0 ? reason : "Page not analyzed." };
     });
-    return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
+    return { pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
   }
 
   // Scope to main content — header, footer, and nav are explicitly NOT QA'd.
@@ -456,7 +471,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   // links-404
   {
     const absolute = rawHrefs
-      .map((h) => absolutize(h, row.pageUrl))
+      .map((h) => absolutize(h, pageUrl))
       .filter((u): u is string => !!u && /^https?:\/\//i.test(u));
     const unique = Array.from(new Set(absolute.map(normalizeDest)));
     const capped = unique.length > MAX_LINKS_PER_PAGE;
@@ -485,10 +500,10 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   }
 
   // links-carried-over (needs reference)
-  if (!row.referenceUrl) {
+  if (!referenceUrl) {
     map["content-links-carried-over"] = { status: "na" };
   } else {
-    const ref = await fetchPage(row.referenceUrl);
+    const ref = await fetchPage(referenceUrl);
     if (!ref.ok || !ref.html) {
       map["content-links-carried-over"] = {
         status: "review",
@@ -506,8 +521,8 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
             .filter((u): u is string => !!u && /^https?:\/\//i.test(u))
             .map(normalizeDest),
         );
-      const refSet = collect(refRoot, row.referenceUrl);
-      const newSet = collect(root, row.pageUrl);
+      const refSet = collect(refRoot, referenceUrl);
+      const newSet = collect(root, pageUrl);
       const missing = [...refSet].filter((u) => !newSet.has(u));
       map["content-links-carried-over"] =
         missing.length === 0
@@ -532,7 +547,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   }
   const imgInfos: ImgInfo[] = await pool(imgEls, IMAGE_SIZE_CONCURRENCY, async (img) => {
     const rawSrc = img.getAttribute("src") ?? "";
-    const absSrc = rawSrc ? absolutize(rawSrc, row.pageUrl) : null;
+    const absSrc = rawSrc ? absolutize(rawSrc, pageUrl) : null;
     const bytes = absSrc && /^https?:\/\//i.test(absSrc) ? await imageByteSize(absSrc) : null;
     return { el: img, absSrc, rawSrc, bytes };
   });
@@ -628,7 +643,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
 
   // Responsive / Layout — real measurements via the render service when configured,
   // otherwise honest placeholders.
-  const render = await callRenderService(row.pageUrl);
+  const render = await callRenderService(pageUrl);
   if (render) {
     const overflow = renderCheckToStatus(render.overflow);
     const header = renderCheckToStatus(render.header1800);
@@ -660,7 +675,7 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   map["final-case-description"] = { status: "review", evidence: "Manual confirmation required." };
   map["final-special-requests"] = { status: "review", evidence: "Manual confirmation required." };
 
-  return { pageUrl: row.pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
+  return { pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
 }
 
 export const runQaBatchServer = createServerFn({ method: "POST" })
