@@ -15,6 +15,7 @@ const STORAGE_KEYS = {
   rows: "qa.rows",
   pages: "qa.pages",
   overrides: "qa.overrides",
+  dealerCodeInput: "qa.dealerCodeInput",
 } as const;
 
 export const Route = createFileRoute("/")({
@@ -43,6 +44,7 @@ function Index() {
   const [rows, setRows] = usePersistentState<QaBatchRow[]>(STORAGE_KEYS.rows, [newRow()]);
   const [pages, setPages] = usePersistentState<QaPageResult[]>(STORAGE_KEYS.pages, []);
   const [overrides, setOverrides] = usePersistentState<Record<string, CheckStatus>>(STORAGE_KEYS.overrides, {});
+  const [dealerCodeInput, setDealerCodeInput] = usePersistentState<string>(STORAGE_KEYS.dealerCodeInput, "");
   const [running, setRunning] = useState(false);
 
   function handleResetCache() {
@@ -51,6 +53,7 @@ function Index() {
     setRows([newRow()]);
     setPages([]);
     setOverrides({});
+    setDealerCodeInput("");
     toast.success("Cleared saved case and results");
   }
 
@@ -77,7 +80,7 @@ function Index() {
     setRunning(true);
     setOverrides({});
     try {
-      const results = await runQaBatch(cleaned);
+      const results = await runQaBatch(cleaned, dealerCodeInput);
       setPages(results);
       toast.success(`Automated QA finished for ${results.length} page${results.length === 1 ? "" : "s"}`);
     } catch {
@@ -171,6 +174,31 @@ function Index() {
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-8">
         <CaseInfoSection value={caseInfo} onChange={setCaseInfo} />
         <BatchInputSection rows={rows} onChange={setRows} onRun={handleRun} running={running} />
+
+        <section className="rounded-xl border border-border bg-card p-6">
+          <header className="mb-3">
+            <h2 className="text-base font-semibold text-foreground">Dealer Replacement Codes</h2>
+            <p className="text-sm text-muted-foreground">
+              Paste <code className="rounded bg-muted px-1 py-0.5 text-xs">code = value</code> pairs, one per line. The QA
+              scan flags any of these values found hardcoded in the page's visible text (they should use the replacement
+              code instead).
+            </p>
+          </header>
+          <textarea
+            value={dealerCodeInput}
+            onChange={(e) => setDealerCodeInput(e.target.value)}
+            rows={6}
+            spellCheck={false}
+            placeholder={"%(CITY) = Honolulu\n%(STATE) = HI\n%(DEALERSHIP_NAME) = Recovery Law Center\n#Phone# = 808-200-3813\n%(ADDRESS) = 1226 College Walk, Honolulu, HI 96817"}
+            className="w-full resize-y rounded-lg border border-input bg-background p-3 font-mono text-sm text-foreground outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Only visible text is checked — never alt text, attributes, or tracking codes. Matching mirrors the CMS
+            replacement rules (e.g. <code className="rounded bg-muted px-1 py-0.5 text-xs">%(STATE)</code> is
+            case-sensitive and word-bounded so "HI" won't match inside "HIGH").
+          </p>
+        </section>
+
         <ResultsSection
           pages={pages}
           overrides={overrides}
