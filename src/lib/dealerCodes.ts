@@ -70,7 +70,22 @@ function buildRegex(search: string, ci: boolean, ss: boolean): RegExp {
  * "#" as a comment... note: codes legitimately start with "#", so we only treat
  * a line as a comment if it starts with "//".
  */
-export function parseCodeValuePairs(input: string): CodeValuePair[] {
+/** Codes that only apply to automotive sites (LeadScience sites have no vehicle make). */
+const AUTOMOTIVE_ONLY_CODES = new Set(["%(DEALERSHIP_MAKE)", "%(MAKES)"]);
+
+/**
+ * Parse the user's "code = value" input (one pair per line). Lines without an
+ * "=" or with an empty value are ignored. Lines starting with "//" are comments
+ * (codes legitimately start with "#", so only "//" is treated as a comment).
+ *
+ * siteType controls make handling: on "leadscience" sites the vehicle-make
+ * codes are dropped entirely (those sites have no make, so matching a value
+ * like "Legal" would flag every occurrence of a common word).
+ */
+export function parseCodeValuePairs(
+  input: string,
+  siteType: "automotive" | "leadscience" = "automotive",
+): CodeValuePair[] {
   const pairs: CodeValuePair[] = [];
   const seen = new Set<string>();
   for (const rawLine of input.split(/\r?\n/)) {
@@ -81,8 +96,9 @@ export function parseCodeValuePairs(input: string): CodeValuePair[] {
     const code = line.slice(0, eq).trim();
     const value = line.slice(eq + 1).trim();
     if (!code || !value) continue;
+    // On LeadScience sites, skip vehicle-make codes entirely.
+    if (siteType === "leadscience" && AUTOMOTIVE_ONLY_CODES.has(code)) continue;
     const rule = CODE_RULES[code] ?? DEFAULT_RULE;
-    // De-dupe identical value+code (avoid double counting).
     const dedupeKey = `${code}::${value}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
