@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/qa/StatusPill";
 import {
@@ -191,10 +191,20 @@ function CheckRow({
   onOverride: (status: CheckStatus | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // When the page-level expand/collapse-all toggles, sync this row's own state
+  // to match. After that, individual clicks work normally (the local state is
+  // the single source of truth — no separate force flag fighting it).
+  const prevForce = useRef(forceExpand);
+  useEffect(() => {
+    if (prevForce.current !== forceExpand) {
+      setExpanded(forceExpand);
+      prevForce.current = forceExpand;
+    }
+  }, [forceExpand]);
   const hasEvidence = Boolean(evidence) && (autoStatus === "fail" || autoStatus === "review");
   const hasDetails = Boolean(details && details.items.length > 0);
   const canExpand = hasEvidence || hasDetails;
-  const isExpanded = (expanded || forceExpand) && canExpand;
+  const isExpanded = expanded && canExpand;
 
   return (
     <li className="border-b border-border/60 px-5 py-3 last:border-b-0">
