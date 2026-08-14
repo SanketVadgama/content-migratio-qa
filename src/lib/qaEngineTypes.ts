@@ -196,6 +196,22 @@ export function checksForType(type: PageType): { id: string; category: CheckCate
   }));
 }
 
+/**
+ * All checks in the catalog, ordered by category then catalog order.
+ * Used when the UI should show the full master checklist on every page
+ * regardless of page type.
+ */
+export function allChecks(): { id: string; category: CheckCategory; label: string }[] {
+  const entries = Object.entries(CHECK_CATALOG).map(([id, def]) => ({
+    id,
+    category: def.category,
+    label: def.label,
+  }));
+  return entries.sort(
+    (a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category),
+  );
+}
+
 /** Flat union of all known checks (used by the engine's evaluation map). */
 export const CHECK_DEFINITIONS: { id: string; category: CheckCategory; label: string }[] = Object.entries(
   CHECK_CATALOG,
