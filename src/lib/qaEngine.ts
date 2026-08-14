@@ -13,10 +13,9 @@ import type { QaBatchRow, QaPageResult } from "./qaEngineTypes";
  *
  * Delegates to the TanStack Start server function (`runQaBatchServer`), which
  * runs on the server and can fetch arbitrary public URLs without CORS issues.
- * Input (`QaBatchRow[]`) and output (`QaPageResult[]`) contracts are unchanged,
- * so the UI needs no modification.
+ * `dealerCodeInput` is the raw "code = value" text for the dealer-codes check.
  */
-export async function runQaBatch(rows: QaBatchRow[]): Promise<QaPageResult[]> {
+export async function runQaBatch(rows: QaBatchRow[], dealerCodeInput = ""): Promise<QaPageResult[]> {
   const { runQaBatchServer } = await import("./qaEngine.server");
-  return runQaBatchServer({ data: rows });
+  return runQaBatchServer({ data: { rows, dealerCodeInput } });
 }
