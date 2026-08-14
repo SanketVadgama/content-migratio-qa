@@ -12,7 +12,7 @@ import {
   type CodeValuePair,
 } from "./dealerCodes";
 import {
-  checksForType,
+  allChecks,
   DEALER_NAME_BLOCKLIST,
   type CheckStatus,
   type QaBatchRow,
@@ -300,7 +300,9 @@ function buildChecks(
   pageType: QaBatchRow["pageType"],
   map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }>,
 ): QaCheck[] {
-  return checksForType(pageType).map((def) => {
+  // Show the full master checklist on every page, regardless of page type.
+  void pageType;
+  return allChecks().map((def) => {
     const r = map[def.id] ?? { status: "review" as CheckStatus, evidence: "Not evaluated." };
     return {
       id: def.id,
@@ -324,7 +326,7 @@ async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): 
       ? `Could not fetch page: ${page.error}`
       : `Could not fetch page (HTTP ${page.status}).`;
     const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
-    checksForType(row.pageType).forEach((def, i) => {
+    allChecks().forEach((def, i) => {
       map[def.id] = { status: "review", evidence: i === 0 ? reason : "Page not analyzed." };
     });
     return { pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
@@ -716,11 +718,13 @@ export interface QaBatchInput {
   rows: QaBatchRow[];
   /** Raw "code = value" pairs (one per line) for the dealer-codes check. */
   dealerCodeInput?: string;
+  /** "automotive" sites check %(DEALERSHIP_MAKE); "leadscience" sites skip it. */
+  siteType?: "automotive" | "leadscience";
 }
 
 export const runQaBatchServer = createServerFn({ method: "POST" })
   .validator((input: QaBatchInput) => input)
   .handler(async ({ data }) => {
-    const pairs = parseCodeValuePairs(data.dealerCodeInput ?? "");
+    const pairs = parseCodeValuePairs(data.dealerCodeInput ?? "", data.siteType ?? "automotive");
     return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, pairs));
   });
