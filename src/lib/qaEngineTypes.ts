@@ -20,6 +20,8 @@ export interface QaBatchRow {
   pageUrl: string;
   referenceUrl?: string | undefined;
   pageType: PageType;
+  /** Optional raw CMS HTML (pre-publish) for the accurate replacement-code check. */
+  rawHtml?: string | undefined;
 }
 
 /** Structured inspection data shown on-screen under a check (never in the PDF/download). */
