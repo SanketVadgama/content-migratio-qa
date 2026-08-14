@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Trash2, Loader2, PlayCircle } from "lucide-react";
+import { Plus, Trash2, Loader2, PlayCircle, Code2, ChevronDown, ChevronRight } from "lucide-react";
 import type { PageType, QaBatchRow } from "@/lib/qaEngine";
 
 interface Props {
@@ -26,6 +26,7 @@ export function newRow(pageUrl = ""): QaBatchRow {
     pageUrl,
     referenceUrl: "",
     pageType: "content-migration",
+    rawHtml: "",
   };
 }
 
@@ -94,48 +95,14 @@ export function BatchInputSection({ rows, onChange, onRun, running }: Props) {
         </div>
 
         {rows.map((row, index) => (
-          <div
+          <BatchRow
             key={row.id}
-            className="grid gap-3 rounded-lg border border-border bg-background p-3 lg:grid-cols-[1fr_1fr_190px_40px] lg:items-center lg:border-transparent lg:bg-transparent lg:p-1"
-          >
-            <Input
-              value={row.pageUrl}
-              onChange={(event) => updateRow(row.id, { pageUrl: event.target.value })}
-              placeholder={`https://example.com/page-${index + 1}`}
-              className="font-mono text-sm"
-              maxLength={500}
-            />
-            <Input
-              value={row.referenceUrl ?? ""}
-              onChange={(event) => updateRow(row.id, { referenceUrl: event.target.value })}
-              placeholder="https://old-site.com/page"
-              className="font-mono text-sm"
-              maxLength={500}
-            />
-            <Select value={row.pageType} onValueChange={(value) => updateRow(row.id, { pageType: value as PageType })}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_TYPES.map((type) => (
-                  <SelectItem key={type.value} value={type.value}>
-                    {type.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Remove row"
-              onClick={() => onChange(rows.filter((item) => item.id !== row.id))}
-              disabled={rows.length === 1}
-              className="justify-self-end text-muted-foreground hover:text-danger"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
+            row={row}
+            index={index}
+            canRemove={rows.length > 1}
+            onUpdate={(patch) => updateRow(row.id, patch)}
+            onRemove={() => onChange(rows.filter((item) => item.id !== row.id))}
+          />
         ))}
       </div>
 
@@ -152,5 +119,93 @@ export function BatchInputSection({ rows, onChange, onRun, running }: Props) {
         </div>
       </div>
     </section>
+  );
+}
+
+const PAGE_TYPES_ROW: { value: PageType; label: string }[] = [
+  { value: "homepage", label: "Homepage" },
+  { value: "content-migration", label: "Content Migration" },
+  { value: "other", label: "Other" },
+];
+
+function BatchRow({
+  row,
+  index,
+  canRemove,
+  onUpdate,
+  onRemove,
+}: {
+  row: QaBatchRow;
+  index: number;
+  canRemove: boolean;
+  onUpdate: (patch: Partial<QaBatchRow>) => void;
+  onRemove: () => void;
+}) {
+  const [showRaw, setShowRaw] = useState(Boolean(row.rawHtml && row.rawHtml.trim()));
+  const hasRaw = Boolean(row.rawHtml && row.rawHtml.trim());
+
+  return (
+    <div className="rounded-lg border border-border bg-background p-3 lg:border-transparent lg:bg-transparent lg:p-1">
+      <div className="grid gap-3 lg:grid-cols-[1fr_1fr_190px_40px] lg:items-center">
+        <Input
+          value={row.pageUrl}
+          onChange={(event) => onUpdate({ pageUrl: event.target.value })}
+          placeholder={`https://example.com/page-${index + 1}`}
+          className="font-mono text-sm"
+          maxLength={500}
+        />
+        <Input
+          value={row.referenceUrl ?? ""}
+          onChange={(event) => onUpdate({ referenceUrl: event.target.value })}
+          placeholder="https://old-site.com/page"
+          className="font-mono text-sm"
+          maxLength={500}
+        />
+        <Select value={row.pageType} onValueChange={(value) => onUpdate({ pageType: value as PageType })}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_TYPES_ROW.map((type) => (
+              <SelectItem key={type.value} value={type.value}>
+                {type.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Remove row"
+          onClick={onRemove}
+          disabled={!canRemove}
+          className="justify-self-end text-muted-foreground hover:text-danger"
+        >
+          <Trash2 className="size-4" />
+        </Button>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setShowRaw((v) => !v)}
+        className="mt-1 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+      >
+        {showRaw ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        <Code2 className="size-3.5" />
+        Raw CMS HTML {hasRaw && !showRaw ? "(added)" : "(optional — accurate replacement-code check)"}
+      </button>
+
+      {showRaw ? (
+        <Textarea
+          value={row.rawHtml ?? ""}
+          onChange={(event) => onUpdate({ rawHtml: event.target.value })}
+          rows={5}
+          spellCheck={false}
+          placeholder="Paste the page's raw CMS HTML here (from the Custom HTML block, before publishing). The replacement-code check will scan this instead of the live page — correctly-templated %(CODE) spots won't be flagged, only hardcoded values."
+          className="mt-2 font-mono text-xs"
+        />
+      ) : null}
+    </div>
   );
 }
