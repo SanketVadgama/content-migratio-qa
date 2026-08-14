@@ -7,6 +7,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { parse, type HTMLElement } from "node-html-parser";
 import {
+  parseCodeValuePairs,
+  detectDealerValues,
+  type CodeValuePair,
+} from "./dealerCodes";
+import {
   checksForType,
   DEALER_NAME_BLOCKLIST,
   type CheckStatus,
@@ -308,7 +313,7 @@ function buildChecks(
   });
 }
 
-async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
+async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): Promise<QaPageResult> {
   const pageUrl = normalizeUrl(row.pageUrl);
   const referenceUrl = row.referenceUrl ? normalizeUrl(row.referenceUrl) : "";
   const page = await fetchPage(pageUrl);
@@ -671,15 +676,51 @@ async function analyzePage(row: QaBatchRow): Promise<QaPageResult> {
   map["content-dealer-logo"] = { status: "review", evidence: "Manual review — logo crop/resize needs a visual check." };
   map["tech-element-order"] = { status: "review", evidence: "Manual review — element order is intent-dependent." };
   map["tech-custom-forms"] = { status: "review", evidence: "Manual review — process check, not a page-state check." };
-  map["tech-dealer-codes"] = { status: "review", evidence: "Manual review — depends on what could be templated." };
+  // tech-dealer-codes — detect hardcoded dealer values in visible text that
+  // should have been replacement codes. Runs only when the user supplied
+  // code=value pairs; otherwise stays a manual review.
+  if (dealerPairs.length === 0) {
+    map["tech-dealer-codes"] = {
+      status: "review",
+      evidence: "Add dealer code = value pairs above to auto-check for hardcoded values.",
+    };
+  } else {
+    const hits = detectDealerValues(text, dealerPairs);
+    if (hits.length === 0) {
+      map["tech-dealer-codes"] = {
+        status: "pass",
+        evidence: `No hardcoded dealer values found in visible text${scopeNote}.`,
+      };
+    } else {
+      const totalOccurrences = hits.reduce((sum, h) => sum + h.count, 0);
+      const items: QaDetailItem[] = hits.map((h) => ({
+        primary: h.value,
+        secondary: h.code,
+        flag: "fail",
+        note: `should be ${h.code}${h.count > 1 ? ` · ${h.count}×` : ""}`,
+      }));
+      map["tech-dealer-codes"] = {
+        status: "fail",
+        evidence: `${hits.length} value(s) hardcoded that should use replacement codes (${totalOccurrences} occurrence(s))${scopeNote}.`,
+        details: { kind: "dealer-codes", items },
+      };
+    }
+  }
   map["final-case-description"] = { status: "review", evidence: "Manual confirmation required." };
   map["final-special-requests"] = { status: "review", evidence: "Manual confirmation required." };
 
   return { pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
 }
 
+export interface QaBatchInput {
+  rows: QaBatchRow[];
+  /** Raw "code = value" pairs (one per line) for the dealer-codes check. */
+  dealerCodeInput?: string;
+}
+
 export const runQaBatchServer = createServerFn({ method: "POST" })
-  .validator((rows: QaBatchRow[]) => rows)
+  .validator((input: QaBatchInput) => input)
   .handler(async ({ data }) => {
-    return pool(data, PAGE_CONCURRENCY, (row) => analyzePage(row));
+    const pairs = parseCodeValuePairs(data.dealerCodeInput ?? "");
+    return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, pairs));
   });
