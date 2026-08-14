@@ -15,7 +15,11 @@ import type { QaBatchRow, QaPageResult } from "./qaEngineTypes";
  * runs on the server and can fetch arbitrary public URLs without CORS issues.
  * `dealerCodeInput` is the raw "code = value" text for the dealer-codes check.
  */
-export async function runQaBatch(rows: QaBatchRow[], dealerCodeInput = ""): Promise<QaPageResult[]> {
+export async function runQaBatch(
+  rows: QaBatchRow[],
+  dealerCodeInput = "",
+  siteType: "automotive" | "leadscience" = "automotive",
+): Promise<QaPageResult[]> {
   const { runQaBatchServer } = await import("./qaEngine.server");
-  return runQaBatchServer({ data: { rows, dealerCodeInput } });
+  return runQaBatchServer({ data: { rows, dealerCodeInput, siteType } });
 }
