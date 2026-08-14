@@ -5,6 +5,7 @@ import {
   CATEGORY_ORDER,
   type CheckStatus,
   type QaCheckDetails,
+  type QaDetailItem,
   type QaPageResult,
 } from "@/lib/qaEngine";
 import { ChevronDown, ChevronRight, Info, ListChecks } from "lucide-react";
@@ -88,22 +89,26 @@ function PageCard({
   onOverride: (key: string, status: CheckStatus | null) => void;
 }) {
   const [open, setOpen] = useState(true);
+  const [expandAll, setExpandAll] = useState(false);
   const summary = summarisePage(page, overrides);
   const percent = Math.round((summary.autoResolved / summary.total) * 100);
 
   return (
     <article className="overflow-hidden rounded-xl border border-border bg-card">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-start gap-3 p-5 text-left transition-colors hover:bg-muted/50"
-      >
-        {open ? (
-          <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        )}
-        <div className="min-w-0 flex-1">
+      <div className="flex items-start gap-3 p-5">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="mt-0.5 shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+          aria-label={open ? "Collapse page" : "Expand page"}
+        >
+          {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="min-w-0 flex-1 text-left"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate font-mono text-sm font-medium text-foreground">{page.pageUrl}</span>
             <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
@@ -117,8 +122,17 @@ function PageCard({
           <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-soft">
             <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${percent}%` }} />
           </div>
-        </div>
-      </button>
+        </button>
+        {open ? (
+          <button
+            type="button"
+            onClick={() => setExpandAll((v) => !v)}
+            className="shrink-0 whitespace-nowrap rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            {expandAll ? "Collapse all checks" : "Expand all checks"}
+          </button>
+        ) : null}
+      </div>
 
       {open ? (
         <div className="border-t border-border">
@@ -142,6 +156,7 @@ function PageCard({
                         evidence={check.evidence}
                         details={check.details}
                         overridden={Boolean(overrides[key])}
+                        forceExpand={expandAll}
                         onOverride={(status) => onOverride(key, status)}
                       />
                     );
@@ -163,6 +178,7 @@ function CheckRow({
   evidence,
   details,
   overridden,
+  forceExpand,
   onOverride,
 }: {
   label: string;
@@ -171,12 +187,14 @@ function CheckRow({
   evidence?: string | undefined;
   details?: QaCheckDetails | undefined;
   overridden: boolean;
+  forceExpand: boolean;
   onOverride: (status: CheckStatus | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasEvidence = Boolean(evidence) && (autoStatus === "fail" || autoStatus === "review");
   const hasDetails = Boolean(details && details.items.length > 0);
   const canExpand = hasEvidence || hasDetails;
+  const isExpanded = (expanded || forceExpand) && canExpand;
 
   return (
     <li className="border-b border-border/60 px-5 py-3 last:border-b-0">
@@ -199,14 +217,14 @@ function CheckRow({
               className="h-7 gap-1 px-2 text-xs text-muted-foreground"
             >
               {hasDetails ? <ListChecks className="size-3.5" /> : <Info className="size-3.5" />}
-              {expanded ? "Hide" : hasDetails ? `Details (${details!.items.length})` : "Evidence"}
+              {isExpanded ? "Hide" : hasDetails ? `Details (${details!.items.length})` : "Evidence"}
             </Button>
           ) : null}
           <StatusPill status={status} />
         </div>
       </div>
 
-      {canExpand && expanded ? (
+      {isExpanded ? (
         <div className="mt-3 rounded-lg border border-border bg-muted/50 p-3">
           {hasEvidence ? <p className="text-sm text-foreground">{evidence}</p> : null}
 
@@ -236,75 +254,119 @@ function CheckRow({
 
 /** Renders the on-screen inspection lists (images / links / oversized). Never part of the download. */
 function DetailList({ details }: { details: QaCheckDetails }) {
-  const isImages = details.kind === "images" || details.kind === "oversized-images";
+  if (details.kind === "links") {
+    return (
+      <div className="mt-1 divide-y divide-border/50 overflow-hidden rounded-md border border-border/60">
+        {details.items.map((item, i) => (
+          <LinkRow key={`${item.primary}-${i}`} item={item} />
+        ))}
+      </div>
+    );
+  }
 
+  // images / oversized-images
   return (
-    <div className={cn("space-y-2", "mt-1")}>
+    <div className="mt-1 space-y-2">
       {details.items.map((item, i) => (
         <div
           key={`${item.primary}-${i}`}
           className="flex items-start gap-3 rounded-md border border-border/60 bg-card px-3 py-2"
         >
-          {isImages ? (
-            <a
-              href={item.primary}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0"
-              title="Open full-size image"
-            >
-              <img
-                src={item.primary}
-                alt=""
-                className="size-10 shrink-0 cursor-zoom-in rounded object-cover ring-1 ring-border transition hover:ring-2 hover:ring-brand"
-                loading="lazy"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-                }}
-              />
-            </a>
-          ) : null}
+          <a
+            href={item.primary}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0"
+            title="Open full-size image"
+          >
+            <img
+              src={item.primary}
+              alt=""
+              className="size-10 shrink-0 cursor-zoom-in rounded object-cover ring-1 ring-border transition hover:ring-2 hover:ring-brand"
+              loading="lazy"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+              }}
+            />
+          </a>
           <div className="min-w-0 flex-1">
             <p className="truncate font-mono text-xs text-foreground" title={item.primary}>
               {item.primary}
             </p>
             {item.secondary ? (
               <p className="truncate text-xs text-muted-foreground" title={item.secondary}>
-                {details.kind === "links" ? "text: " : "alt: "}
-                {item.secondary}
+                alt: {item.secondary}
               </p>
             ) : (
-              <p className="text-xs italic text-muted-foreground">
-                {details.kind === "links" ? "(no link text)" : "(no alt text)"}
-              </p>
+              <p className="text-xs italic text-muted-foreground">(no alt text)</p>
             )}
-            {item.extra && item.extra.length > 0 ? (
-              <div className="mt-1.5 space-y-0.5 rounded border border-border/50 bg-muted/40 p-2">
-                <p className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">Full GA4 tagging</p>
-                {item.extra.map((line, j) => (
-                  <p key={j} className="break-all font-mono text-[11px] leading-snug text-foreground/80">
-                    {line}
-                  </p>
-                ))}
-              </div>
-            ) : null}
           </div>
-          {item.note ? (
-            <span
-              className={cn(
-                "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                item.flag === "ok" && "border-success/30 text-success",
-                item.flag === "warn" && "border-warning/40 text-warning-foreground",
-                item.flag === "fail" && "border-danger/30 text-danger",
-                !item.flag && "border-border text-muted-foreground",
-              )}
-            >
-              {item.note}
-            </span>
-          ) : null}
+          {item.note ? <FlagPill flag={item.flag} note={item.note} /> : null}
         </div>
       ))}
     </div>
+  );
+}
+
+/** Compact single-row link entry; GA4 tags collapse behind a toggle. */
+function LinkRow({ item }: { item: QaDetailItem }) {
+  const [showTags, setShowTags] = useState(false);
+  const hasTags = Boolean(item.extra && item.extra.length > 0);
+
+  return (
+    <div className="bg-card px-3 py-1.5">
+      <div className="flex items-center gap-2">
+        <a
+          href={item.primary}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="min-w-0 flex-1 truncate font-mono text-xs text-foreground hover:text-brand hover:underline"
+          title={item.primary}
+        >
+          {item.primary}
+        </a>
+        {item.secondary && item.secondary !== "(no text)" ? (
+          <span className="hidden max-w-[30%] shrink-0 truncate text-xs text-muted-foreground sm:inline" title={item.secondary}>
+            {item.secondary}
+          </span>
+        ) : null}
+        {hasTags ? (
+          <button
+            type="button"
+            onClick={() => setShowTags((v) => !v)}
+            className="shrink-0 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+          >
+            {showTags ? "hide tags" : `tags (${item.extra!.length})`}
+          </button>
+        ) : null}
+        {item.note ? <FlagPill flag={item.flag} note={item.note} /> : null}
+      </div>
+      {showTags && hasTags ? (
+        <div className="mt-1 mb-1 flex flex-wrap gap-1 rounded border border-border/50 bg-muted/40 p-1.5">
+          {item.extra!.map((line, j) => (
+            <span key={j} className="rounded bg-card px-1.5 py-0.5 font-mono text-[10px] leading-tight text-foreground/80">
+              {line}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FlagPill({ flag, note }: { flag?: "ok" | "warn" | "fail"; note: string }) {
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+        flag === "ok" && "border-success/30 text-success",
+        flag === "warn" && "border-warning/40 text-warning-foreground",
+        flag === "fail" && "border-danger/30 text-danger",
+        !flag && "border-border text-muted-foreground",
+      )}
+    >
+      {note}
+    </span>
   );
 }
 
