@@ -16,6 +16,7 @@ const STORAGE_KEYS = {
   pages: "qa.pages",
   overrides: "qa.overrides",
   dealerCodeInput: "qa.dealerCodeInput",
+  siteType: "qa.siteType",
 } as const;
 
 export const Route = createFileRoute("/")({
@@ -45,6 +46,7 @@ function Index() {
   const [pages, setPages] = usePersistentState<QaPageResult[]>(STORAGE_KEYS.pages, []);
   const [overrides, setOverrides] = usePersistentState<Record<string, CheckStatus>>(STORAGE_KEYS.overrides, {});
   const [dealerCodeInput, setDealerCodeInput] = usePersistentState<string>(STORAGE_KEYS.dealerCodeInput, "");
+  const [siteType, setSiteType] = usePersistentState<"automotive" | "leadscience">(STORAGE_KEYS.siteType, "automotive");
   const [running, setRunning] = useState(false);
 
   function handleResetCache() {
@@ -54,6 +56,7 @@ function Index() {
     setPages([]);
     setOverrides({});
     setDealerCodeInput("");
+    setSiteType("automotive");
     toast.success("Cleared saved case and results");
   }
 
@@ -80,7 +83,7 @@ function Index() {
     setRunning(true);
     setOverrides({});
     try {
-      const results = await runQaBatch(cleaned, dealerCodeInput);
+      const results = await runQaBatch(cleaned, dealerCodeInput, siteType);
       setPages(results);
       toast.success(`Automated QA finished for ${results.length} page${results.length === 1 ? "" : "s"}`);
     } catch {
@@ -176,13 +179,41 @@ function Index() {
         <BatchInputSection rows={rows} onChange={setRows} onRun={handleRun} running={running} />
 
         <section className="rounded-xl border border-border bg-card p-6">
-          <header className="mb-3">
-            <h2 className="text-base font-semibold text-foreground">Dealer Replacement Codes</h2>
-            <p className="text-sm text-muted-foreground">
-              Paste <code className="rounded bg-muted px-1 py-0.5 text-xs">code = value</code> pairs, one per line. The QA
-              scan flags any of these values found hardcoded in the page's visible text (they should use the replacement
-              code instead).
-            </p>
+          <header className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Dealer Replacement Codes</h2>
+              <p className="text-sm text-muted-foreground">
+                Paste <code className="rounded bg-muted px-1 py-0.5 text-xs">code = value</code> pairs, one per line. The
+                QA scan flags any of these values found hardcoded in the page's visible text (they should use the
+                replacement code instead).
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/50 p-1">
+              <button
+                type="button"
+                onClick={() => setSiteType("automotive")}
+                className={
+                  "rounded-md px-3 py-1 text-xs font-medium transition-colors " +
+                  (siteType === "automotive"
+                    ? "bg-brand text-brand-foreground"
+                    : "text-muted-foreground hover:text-foreground")
+                }
+              >
+                Automotive
+              </button>
+              <button
+                type="button"
+                onClick={() => setSiteType("leadscience")}
+                className={
+                  "rounded-md px-3 py-1 text-xs font-medium transition-colors " +
+                  (siteType === "leadscience"
+                    ? "bg-brand text-brand-foreground"
+                    : "text-muted-foreground hover:text-foreground")
+                }
+              >
+                LeadScience
+              </button>
+            </div>
           </header>
           <textarea
             value={dealerCodeInput}
@@ -193,8 +224,11 @@ function Index() {
             className="w-full resize-y rounded-lg border border-input bg-background p-3 font-mono text-sm text-foreground outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            Only visible text is checked — never alt text, attributes, or tracking codes. Matching mirrors the CMS
-            replacement rules (e.g. <code className="rounded bg-muted px-1 py-0.5 text-xs">%(STATE)</code> is
+            Only visible text is checked — never alt text, attributes, or tracking codes.{" "}
+            {siteType === "leadscience"
+              ? "LeadScience mode: vehicle-make codes are ignored."
+              : "Automotive mode: vehicle-make codes are checked."}{" "}
+            Matching mirrors the CMS rules (e.g. <code className="rounded bg-muted px-1 py-0.5 text-xs">%(STATE)</code> is
             case-sensitive and word-bounded so "HI" won't match inside "HIGH").
           </p>
         </section>
