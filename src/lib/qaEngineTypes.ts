@@ -25,7 +25,7 @@ export interface QaBatchRow {
 /** Structured inspection data shown on-screen under a check (never in the PDF/download). */
 export interface QaCheckDetails {
   /** Kind of detail payload, so the UI knows how to render it. */
-  kind: "images" | "links" | "oversized-images";
+  kind: "images" | "links" | "oversized-images" | "dealer-codes";
   items: QaDetailItem[];
 }
 
