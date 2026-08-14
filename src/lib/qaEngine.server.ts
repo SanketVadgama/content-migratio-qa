@@ -678,20 +678,25 @@ async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): 
   map["content-dealer-logo"] = { status: "review", evidence: "Manual review — logo crop/resize needs a visual check." };
   map["tech-element-order"] = { status: "review", evidence: "Manual review — element order is intent-dependent." };
   map["tech-custom-forms"] = { status: "review", evidence: "Manual review — process check, not a page-state check." };
-  // tech-dealer-codes — detect hardcoded dealer values in visible text that
-  // should have been replacement codes. Runs only when the user supplied
-  // code=value pairs; otherwise stays a manual review.
+  // tech-dealer-codes — detect hardcoded dealer values that should have been
+  // replacement codes. When raw CMS HTML is provided for the page, scan THAT
+  // (it still contains the actual %(...) codes, so correctly-templated spots
+  // show the code and won't match — only true hardcoded values are flagged).
+  // Otherwise fall back to the live page's scoped visible text.
   if (dealerPairs.length === 0) {
     map["tech-dealer-codes"] = {
       status: "review",
       evidence: "Add dealer code = value pairs above to auto-check for hardcoded values.",
     };
   } else {
-    const hits = detectDealerValues(text, dealerPairs);
+    const usingRaw = Boolean(row.rawHtml && row.rawHtml.trim());
+    const sourceText = usingRaw ? visibleText(scopeToContent(row.rawHtml as string).node) : text;
+    const sourceNote = usingRaw ? " (raw CMS HTML)" : scopeNote;
+    const hits = detectDealerValues(sourceText, dealerPairs);
     if (hits.length === 0) {
       map["tech-dealer-codes"] = {
         status: "pass",
-        evidence: `No hardcoded dealer values found in visible text${scopeNote}.`,
+        evidence: `No hardcoded dealer values found${sourceNote}.`,
       };
     } else {
       const totalOccurrences = hits.reduce((sum, h) => sum + h.count, 0);
@@ -703,7 +708,7 @@ async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): 
       }));
       map["tech-dealer-codes"] = {
         status: "fail",
-        evidence: `${hits.length} value(s) hardcoded that should use replacement codes (${totalOccurrences} occurrence(s))${scopeNote}.`,
+        evidence: `${hits.length} value(s) hardcoded that should use replacement codes (${totalOccurrences} occurrence(s))${sourceNote}.`,
         details: { kind: "dealer-codes", items },
       };
     }
