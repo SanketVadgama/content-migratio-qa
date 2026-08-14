@@ -264,6 +264,26 @@ function DetailList({ details }: { details: QaCheckDetails }) {
     );
   }
 
+  if (details.kind === "dealer-codes") {
+    return (
+      <div className="mt-1 divide-y divide-border/50 overflow-hidden rounded-md border border-border/60">
+        {details.items.map((item, i) => (
+          <div key={`${item.primary}-${i}`} className="flex items-center gap-2 bg-card px-3 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-xs text-foreground" title={item.primary}>
+              "{item.primary}"
+            </span>
+            {item.secondary ? (
+              <span className="shrink-0 font-mono text-xs text-brand" title={`Should use ${item.secondary}`}>
+                {item.secondary}
+              </span>
+            ) : null}
+            {item.note ? <FlagPill flag={item.flag} note={item.note} /> : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   // images / oversized-images
   return (
     <div className="mt-1 space-y-2">
