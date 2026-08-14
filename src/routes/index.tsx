@@ -6,7 +6,16 @@ import { CaseInfoSection, emptyCaseInfo, type CaseInfo } from "@/components/qa/C
 import { BatchInputSection, newRow } from "@/components/qa/BatchInputSection";
 import { ResultsSection, summarisePage } from "@/components/qa/ResultsSection";
 import { runQaBatch, type CheckStatus, type QaBatchRow, type QaPageResult } from "@/lib/qaEngine";
-import { Download, ShieldCheck } from "lucide-react";
+import { usePersistentState, clearPersistedKeys } from "@/lib/usePersistentState";
+import { Download, ShieldCheck, RotateCcw } from "lucide-react";
+
+// localStorage keys for cached case state.
+const STORAGE_KEYS = {
+  caseInfo: "qa.caseInfo",
+  rows: "qa.rows",
+  pages: "qa.pages",
+  overrides: "qa.overrides",
+} as const;
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -30,11 +39,20 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const [caseInfo, setCaseInfo] = useState<CaseInfo>(emptyCaseInfo);
-  const [rows, setRows] = useState<QaBatchRow[]>([newRow()]);
-  const [pages, setPages] = useState<QaPageResult[]>([]);
-  const [overrides, setOverrides] = useState<Record<string, CheckStatus>>({});
+  const [caseInfo, setCaseInfo] = usePersistentState<CaseInfo>(STORAGE_KEYS.caseInfo, emptyCaseInfo);
+  const [rows, setRows] = usePersistentState<QaBatchRow[]>(STORAGE_KEYS.rows, [newRow()]);
+  const [pages, setPages] = usePersistentState<QaPageResult[]>(STORAGE_KEYS.pages, []);
+  const [overrides, setOverrides] = usePersistentState<Record<string, CheckStatus>>(STORAGE_KEYS.overrides, {});
   const [running, setRunning] = useState(false);
+
+  function handleResetCache() {
+    clearPersistedKeys(Object.values(STORAGE_KEYS));
+    setCaseInfo(emptyCaseInfo);
+    setRows([newRow()]);
+    setPages([]);
+    setOverrides({});
+    toast.success("Cleared saved case and results");
+  }
 
   const totals = useMemo(() => {
     return pages.reduce(
@@ -140,7 +158,13 @@ function Index() {
             <Button variant="outline" onClick={handleExport}>
               <Download className="size-4" /> Export QA Report
             </Button>
+            <Button variant="ghost" onClick={handleResetCache} title="Clear saved case and results from this browser">
+              <RotateCcw className="size-4" /> Reset Cache
+            </Button>
           </div>
+        </div>
+        <div className="mx-auto max-w-6xl px-6 pb-2">
+          <p className="text-xs text-muted-foreground">All changes saved locally in this browser</p>
         </div>
       </header>
 
