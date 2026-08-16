@@ -224,12 +224,13 @@ function Index() {
             className="w-full resize-y rounded-lg border border-input bg-background p-3 font-mono text-sm text-foreground outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            Only visible text is checked — never alt text, attributes, or tracking codes.{" "}
+            Only visible text is checked — never alt text, attributes, or tracking codes. Site type is auto-detected from
+            each URL (<code className="rounded bg-muted px-1 py-0.5 text-xs">*.leadscience.com</code> → LeadScience,{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">*.dealeron.com</code> → Automotive); the toggle above
+            is the fallback for other URLs.{" "}
             {siteType === "leadscience"
-              ? "LeadScience mode: vehicle-make codes are ignored."
-              : "Automotive mode: vehicle-make codes are checked."}{" "}
-            Matching mirrors the CMS rules (e.g. <code className="rounded bg-muted px-1 py-0.5 text-xs">%(STATE)</code> is
-            case-sensitive and word-bounded so "HI" won't match inside "HIGH").
+              ? "Fallback: LeadScience (make codes ignored)."
+              : "Fallback: Automotive (make codes checked)."}
           </p>
         </section>
 
