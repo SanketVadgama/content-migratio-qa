@@ -287,15 +287,72 @@ function isInAccordionOrFaq(el: HTMLElement | null): boolean {
   return false;
 }
 
-async function checkLink(url: string): Promise<number> {
+interface LinkCheckResult {
+  status: number;
+  /** Why it's considered broken, for the evidence line. Empty if OK. */
+  problem: string;
+}
+
+/** Signals in page text/title that indicate a soft 404 (200 that's really "not found"). */
+const SOFT_404_SIGNALS = [
+  "404",
+  "page not found",
+  "page cannot be found",
+  "page can't be found",
+  "page you requested",
+  "page you were looking for",
+  "page doesn't exist",
+  "page does not exist",
+  "no longer exists",
+  "nothing was found",
+  "sorry, we couldn't find",
+  "oops! that page",
+];
+
+/**
+ * Check a link with soft-404 + redirect-to-home detection.
+ * Uses GET (some servers hide real 404s behind lenient HEAD handling).
+ * `homeOrigin` is the site's homepage URL, used to spot links that only
+ * "work" by redirecting to the homepage.
+ */
+async function checkLink(url: string, homeOrigin: string): Promise<LinkCheckResult> {
   try {
-    let res = await fetchWithTimeout(url, { method: "HEAD" }, PAGE_TIMEOUT_MS);
-    if (res.status === 405 || res.status === 501) {
-      res = await fetchWithTimeout(url, { method: "GET" }, PAGE_TIMEOUT_MS);
+    const res = await fetchWithTimeout(url, { method: "GET" }, PAGE_TIMEOUT_MS);
+
+    if (res.status >= 400) {
+      return { status: res.status, problem: `HTTP ${res.status}` };
     }
-    return res.status;
+
+    // Redirect-to-home: final URL is the homepage but the link wasn't the homepage.
+    if (homeOrigin) {
+      const finalNorm = normalizeDest(res.url || url);
+      const homeNorm = normalizeDest(homeOrigin);
+      const reqNorm = normalizeDest(url);
+      if (finalNorm === homeNorm && reqNorm !== homeNorm) {
+        return { status: res.status, problem: "redirects to homepage (page likely gone)" };
+      }
+    }
+
+    // Soft-404: 200 OK but the body/title says "not found".
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("text/html")) {
+      const html = await res.text();
+      const root = parse(html);
+      const title = (root.querySelector("title")?.text ?? "").toLowerCase();
+      // Only scan a bounded slice of body text for signals (keep it cheap).
+      const bodyText = root.text.replace(/\s+/g, " ").toLowerCase().slice(0, 4000);
+      const hay = `${title} ${bodyText}`;
+      const hit = SOFT_404_SIGNALS.find((sig) => hay.includes(sig));
+      // Require the signal to be prominent (in title, or the body is very short —
+      // real content pages that merely mention "404" in an article won't be short).
+      if (hit && (title.includes(hit) || bodyText.length < 1200)) {
+        return { status: res.status, problem: `soft 404 ("${hit}")` };
+      }
+    }
+
+    return { status: res.status, problem: "" };
   } catch {
-    return 0; // network failure — treat as unreachable
+    return { status: 0, problem: "unreachable" };
   }
 }
 
@@ -322,6 +379,7 @@ async function analyzePage(
   row: QaBatchRow,
   dealerPairsAll: CodeValuePair[] = [],
   siteFallback: SiteType = "automotive",
+  websiteBase = "",
 ): Promise<QaPageResult> {
   const pageUrl = normalizeUrl(row.pageUrl);
   // URL detection wins; the manual toggle is only a fallback.
@@ -487,30 +545,57 @@ async function analyzePage(
 
   // links-404
   {
-    const absolute = rawHrefs
-      .map((h) => absolutize(h, pageUrl))
+    // Resolve each href for checking:
+    //  - root-relative ("/contact/") → resolve against the production Website
+    //    URL (Case Info) when provided, else the page URL.
+    //  - absolute (http/https) → leave exactly as-is (external links must not
+    //    be rewritten to the production base).
+    //  - other relative ("about/", "../x") → resolve against the page URL.
+    const homeOrigin = websiteBase ? normalizeUrl(websiteBase) : "";
+    const resolveForCheck = (href: string): string | null => {
+      const h = href.trim();
+      if (/^https?:\/\//i.test(h)) return h; // already absolute — as-is
+      if (h.startsWith("/") && homeOrigin) {
+        try {
+          return new URL(h, homeOrigin).toString();
+        } catch {
+          return null;
+        }
+      }
+      return absolutize(h, pageUrl); // fallback: resolve against the page
+    };
+
+    const resolved = rawHrefs
+      .map(resolveForCheck)
       .filter((u): u is string => !!u && /^https?:\/\//i.test(u));
-    const unique = Array.from(new Set(absolute.map(normalizeDest)));
+    const unique = Array.from(new Set(resolved.map(normalizeDest)));
     const capped = unique.length > MAX_LINKS_PER_PAGE;
     const toCheck = unique.slice(0, MAX_LINKS_PER_PAGE);
 
     if (toCheck.length === 0) {
       map["links-404"] = { status: "pass" };
     } else {
-      const statuses = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
+      const results = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
         url: u,
-        status: await checkLink(u),
+        ...(await checkLink(u, homeOrigin)),
       }));
-      const broken = statuses.filter((s) => s.status >= 400 || s.status === 0);
+      const broken = results.filter((r) => r.problem !== "");
       if (broken.length === 0) {
-        map["links-404"] = { status: "pass" };
+        const baseNote = homeOrigin ? ` (root-relative links checked against ${homeOrigin})` : "";
+        map["links-404"] = { status: "pass", evidence: `All ${toCheck.length} link(s) OK${baseNote}.` };
       } else {
-        const sample = broken.slice(0, 5).map((b) => `${b.url} (${b.status || "unreachable"})`);
+        const items: QaDetailItem[] = broken.map((b) => ({
+          primary: b.url,
+          flag: "fail",
+          note: b.problem,
+        }));
+        const sample = broken.slice(0, 5).map((b) => `${b.url} — ${b.problem}`);
         map["links-404"] = {
           status: "fail",
           evidence:
             `${broken.length} broken link(s) found: ${sample.join("; ")}` +
             (capped ? ` — only first ${MAX_LINKS_PER_PAGE} links checked.` : "."),
+          details: { kind: "links", items },
         };
       }
     }
@@ -736,6 +821,8 @@ export interface QaBatchInput {
   dealerCodeInput?: string;
   /** Fallback site type when a page URL doesn't match a known pattern. */
   siteType?: SiteType;
+  /** Production Website URL (from Case Info) — base for resolving root-relative links. */
+  websiteUrl?: string;
 }
 
 export const runQaBatchServer = createServerFn({ method: "POST" })
@@ -743,5 +830,6 @@ export const runQaBatchServer = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const allPairs = parseCodeValuePairs(data.dealerCodeInput ?? "");
     const fallback = data.siteType ?? "automotive";
-    return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, allPairs, fallback));
+    const websiteUrl = data.websiteUrl?.trim() || "";
+    return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, allPairs, fallback, websiteUrl));
   });
