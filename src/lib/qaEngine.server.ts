@@ -9,7 +9,10 @@ import { parse, type HTMLElement } from "node-html-parser";
 import {
   parseCodeValuePairs,
   detectDealerValues,
+  resolveSiteType,
+  filterPairsForSite,
   type CodeValuePair,
+  type SiteType,
 } from "./dealerCodes";
 import {
   allChecks,
@@ -315,8 +318,15 @@ function buildChecks(
   });
 }
 
-async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): Promise<QaPageResult> {
+async function analyzePage(
+  row: QaBatchRow,
+  dealerPairsAll: CodeValuePair[] = [],
+  siteFallback: SiteType = "automotive",
+): Promise<QaPageResult> {
   const pageUrl = normalizeUrl(row.pageUrl);
+  // URL detection wins; the manual toggle is only a fallback.
+  const effectiveSiteType = resolveSiteType(pageUrl, siteFallback);
+  const dealerPairs = filterPairsForSite(dealerPairsAll, effectiveSiteType);
   const referenceUrl = row.referenceUrl ? normalizeUrl(row.referenceUrl) : "";
   const page = await fetchPage(pageUrl);
 
@@ -691,7 +701,8 @@ async function analyzePage(row: QaBatchRow, dealerPairs: CodeValuePair[] = []): 
   } else {
     const usingRaw = Boolean(row.rawHtml && row.rawHtml.trim());
     const sourceText = usingRaw ? visibleText(scopeToContent(row.rawHtml as string).node) : text;
-    const sourceNote = usingRaw ? " (raw CMS HTML)" : scopeNote;
+    const sourceLabel = usingRaw ? "raw CMS HTML" : `scoped to ${region}`;
+    const sourceNote = ` (${sourceLabel} · ${effectiveSiteType})`;
     const hits = detectDealerValues(sourceText, dealerPairs);
     if (hits.length === 0) {
       map["tech-dealer-codes"] = {
@@ -723,13 +734,14 @@ export interface QaBatchInput {
   rows: QaBatchRow[];
   /** Raw "code = value" pairs (one per line) for the dealer-codes check. */
   dealerCodeInput?: string;
-  /** "automotive" sites check %(DEALERSHIP_MAKE); "leadscience" sites skip it. */
-  siteType?: "automotive" | "leadscience";
+  /** Fallback site type when a page URL doesn't match a known pattern. */
+  siteType?: SiteType;
 }
 
 export const runQaBatchServer = createServerFn({ method: "POST" })
   .validator((input: QaBatchInput) => input)
   .handler(async ({ data }) => {
-    const pairs = parseCodeValuePairs(data.dealerCodeInput ?? "", data.siteType ?? "automotive");
-    return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, pairs));
+    const allPairs = parseCodeValuePairs(data.dealerCodeInput ?? "");
+    const fallback = data.siteType ?? "automotive";
+    return pool(data.rows, PAGE_CONCURRENCY, (row) => analyzePage(row, allPairs, fallback));
   });
