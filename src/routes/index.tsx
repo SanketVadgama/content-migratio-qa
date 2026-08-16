@@ -83,7 +83,7 @@ function Index() {
     setRunning(true);
     setOverrides({});
     try {
-      const results = await runQaBatch(cleaned, dealerCodeInput, siteType);
+      const results = await runQaBatch(cleaned, dealerCodeInput, siteType, caseInfo.websiteUrl);
       setPages(results);
       toast.success(`Automated QA finished for ${results.length} page${results.length === 1 ? "" : "s"}`);
     } catch {
