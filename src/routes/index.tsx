@@ -74,11 +74,31 @@ function Index() {
     );
   }, [pages, overrides]);
 
+  function missingRequiredFields(): string[] {
+    const missing: string[] = [];
+    if (!caseInfo.caseNumber.trim()) missing.push("Case Number");
+    if (!caseInfo.designerName.trim()) missing.push("Designer Name");
+    if (!caseInfo.dealerName.trim()) missing.push("Dealer / Website Name");
+    if (!caseInfo.websiteUrl.trim()) missing.push("Website URL");
+    return missing;
+  }
+
   async function handleRun() {
+    const missing = missingRequiredFields();
+    if (missing.length > 0) {
+      toast.error(`Please fill required Case Information: ${missing.join(", ")}`);
+      return;
+    }
     const cleaned = rows
       .map((row) => ({ ...row, pageUrl: row.pageUrl.trim(), referenceUrl: row.referenceUrl?.trim() || "" }))
       .filter((row) => row.pageUrl !== "");
     if (cleaned.length === 0) return;
+
+    // Soft warning: dealer codes empty means the replacement-code check can't run,
+    // but we still proceed with the other checks.
+    if (!dealerCodeInput.trim()) {
+      toast.warning("No Dealer Replacement Codes entered — the replacement-code check will be skipped.");
+    }
 
     setRunning(true);
     setOverrides({});
@@ -96,6 +116,11 @@ function Index() {
   function handleExport() {
     if (pages.length === 0) {
       toast.error("Run automated QA before exporting a report");
+      return;
+    }
+    const missing = missingRequiredFields();
+    if (missing.length > 0) {
+      toast.error(`Please fill required Case Information: ${missing.join(", ")}`);
       return;
     }
     const lines: string[] = [
@@ -181,7 +206,12 @@ function Index() {
         <section className="rounded-xl border border-border bg-card p-6">
           <header className="mb-3 flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-base font-semibold text-foreground">Dealer Replacement Codes</h2>
+              <h2 className="text-base font-semibold text-foreground">
+                Dealer Replacement Codes
+                <span className="ml-2 rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold tracking-wide text-warning-foreground uppercase">
+                  Recommended
+                </span>
+              </h2>
               <p className="text-sm text-muted-foreground">
                 Paste <code className="rounded bg-muted px-1 py-0.5 text-xs">code = value</code> pairs, one per line. The
                 QA scan flags any of these values found hardcoded in the page's visible text (they should use the
