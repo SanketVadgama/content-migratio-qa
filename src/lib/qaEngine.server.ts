@@ -301,13 +301,53 @@ const SOFT_404_SIGNALS = [
   "page can't be found",
   "page you requested",
   "page you were looking for",
+  "page you are looking for",
   "page doesn't exist",
   "page does not exist",
+  "page no longer exists",
   "no longer exists",
   "nothing was found",
+  "not be found",
+  "couldn't find",
+  "could not find",
+  "can't find the page",
+  "cannot find the page",
   "sorry, we couldn't find",
   "oops! that page",
+  "oops, that page",
+  "error 404",
+  "404 error",
+  "not found",
+  "doesn't seem to exist",
+  "does not seem to exist",
+  "we can't seem to find",
+  "this page may have been moved",
 ];
+
+interface SoftFingerprint {
+  title: string;
+  length: number;
+  sample: string;
+}
+
+/** Fetch a guaranteed-nonexistent URL on a base to fingerprint the site's soft-404 page. */
+async function probeSoft404(base: string): Promise<SoftFingerprint | null> {
+  try {
+    const probeUrl = new URL(`/qa-probe-${Math.random().toString(36).slice(2, 10)}-does-not-exist/`, base).toString();
+    const res = await fetchWithTimeout(probeUrl, { method: "GET" }, PAGE_TIMEOUT_MS);
+    // If the probe correctly 404s, the site uses real status codes — no soft-404 baseline needed.
+    if (res.status >= 400) return null;
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("text/html")) return null;
+    const html = await res.text();
+    const root = parse(html);
+    const title = (root.querySelector("title")?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+    const text = root.text.replace(/\s+/g, " ").trim().toLowerCase();
+    return { title, length: text.length, sample: text.slice(0, 500) };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Check a link with soft-404 + redirect-to-home detection.
@@ -315,7 +355,7 @@ const SOFT_404_SIGNALS = [
  * `homeOrigin` is the site's homepage URL, used to spot links that only
  * "work" by redirecting to the homepage.
  */
-async function checkLink(url: string, homeOrigin: string): Promise<LinkCheckResult> {
+async function checkLink(url: string, homeOrigin: string, softFp: SoftFingerprint | null): Promise<LinkCheckResult> {
   try {
     const res = await fetchWithTimeout(url, { method: "GET" }, PAGE_TIMEOUT_MS);
 
@@ -333,19 +373,28 @@ async function checkLink(url: string, homeOrigin: string): Promise<LinkCheckResu
       }
     }
 
-    // Soft-404: 200 OK but the body/title says "not found".
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("text/html")) {
       const html = await res.text();
       const root = parse(html);
-      const title = (root.querySelector("title")?.text ?? "").toLowerCase();
-      // Only scan a bounded slice of body text for signals (keep it cheap).
-      const bodyText = root.text.replace(/\s+/g, " ").toLowerCase().slice(0, 4000);
-      const hay = `${title} ${bodyText}`;
+      const title = (root.querySelector("title")?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+      const bodyText = root.text.replace(/\s+/g, " ").trim().toLowerCase();
+
+      // (a) Baseline fingerprint match: this page looks like the site's known
+      //     soft-404 page (same title, and near-same length).
+      if (softFp) {
+        const titleMatch = softFp.title.length > 0 && title === softFp.title;
+        const lenClose = softFp.length > 0 && Math.abs(bodyText.length - softFp.length) / softFp.length < 0.15;
+        const sampleMatch = softFp.sample.length > 50 && bodyText.slice(0, 500) === softFp.sample;
+        if ((titleMatch && lenClose) || sampleMatch) {
+          return { status: res.status, problem: "soft 404 (matches site's not-found page)" };
+        }
+      }
+
+      // (b) Signal match: title/body contains a not-found phrase, made prominent.
+      const hay = `${title} ${bodyText.slice(0, 4000)}`;
       const hit = SOFT_404_SIGNALS.find((sig) => hay.includes(sig));
-      // Require the signal to be prominent (in title, or the body is very short —
-      // real content pages that merely mention "404" in an article won't be short).
-      if (hit && (title.includes(hit) || bodyText.length < 1200)) {
+      if (hit && (title.includes(hit) || bodyText.length < 1500)) {
         return { status: res.status, problem: `soft 404 ("${hit}")` };
       }
     }
@@ -575,9 +624,21 @@ async function analyzePage(
     if (toCheck.length === 0) {
       map["links-404"] = { status: "pass" };
     } else {
+      // Fingerprint the site's soft-404 page once (probe a guaranteed-missing
+      // URL). Prefer the production base; fall back to the page's own origin.
+      let probeBase = homeOrigin;
+      if (!probeBase) {
+        try {
+          probeBase = new URL(pageUrl).origin;
+        } catch {
+          probeBase = "";
+        }
+      }
+      const softFp = probeBase ? await probeSoft404(probeBase) : null;
+
       const results = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
         url: u,
-        ...(await checkLink(u, homeOrigin)),
+        ...(await checkLink(u, homeOrigin, softFp)),
       }));
       const broken = results.filter((r) => r.problem !== "");
       if (broken.length === 0) {
