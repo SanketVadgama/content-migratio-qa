@@ -73,19 +73,42 @@ function buildRegex(search: string, ci: boolean, ss: boolean): RegExp {
 /** Codes that only apply to automotive sites (LeadScience sites have no vehicle make). */
 const AUTOMOTIVE_ONLY_CODES = new Set(["%(DEALERSHIP_MAKE)", "%(MAKES)"]);
 
+export type SiteType = "automotive" | "leadscience";
+
+/**
+ * Detect site type from a URL by its known host pattern:
+ *   client*.leadscience.com  → leadscience
+ *   dealer*.dealeron.com     → automotive
+ * Returns null when the URL matches neither (caller falls back to the toggle).
+ */
+export function detectSiteType(url: string): SiteType | null {
+  let host: string;
+  try {
+    const withProto = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    host = new URL(withProto).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (/(^|\.)leadscience\.com$/.test(host) && /^client/i.test(host)) return "leadscience";
+  if (/(^|\.)dealeron\.com$/.test(host) && /^dealer/i.test(host)) return "automotive";
+  return null;
+}
+
+/** Resolve effective site type: URL detection first, toggle as fallback. */
+export function resolveSiteType(url: string, fallback: SiteType): SiteType {
+  return detectSiteType(url) ?? fallback;
+}
+
 /**
  * Parse the user's "code = value" input (one pair per line). Lines without an
  * "=" or with an empty value are ignored. Lines starting with "//" are comments
  * (codes legitimately start with "#", so only "//" is treated as a comment).
  *
- * siteType controls make handling: on "leadscience" sites the vehicle-make
- * codes are dropped entirely (those sites have no make, so matching a value
- * like "Legal" would flag every occurrence of a common word).
+ * All codes are kept here; site-type filtering happens per-page at detection
+ * time (see filterPairsForSite), because different pages in one batch may be
+ * different site types.
  */
-export function parseCodeValuePairs(
-  input: string,
-  siteType: "automotive" | "leadscience" = "automotive",
-): CodeValuePair[] {
+export function parseCodeValuePairs(input: string): CodeValuePair[] {
   const pairs: CodeValuePair[] = [];
   const seen = new Set<string>();
   for (const rawLine of input.split(/\r?\n/)) {
@@ -96,8 +119,6 @@ export function parseCodeValuePairs(
     const code = line.slice(0, eq).trim();
     const value = line.slice(eq + 1).trim();
     if (!code || !value) continue;
-    // On LeadScience sites, skip vehicle-make codes entirely.
-    if (siteType === "leadscience" && AUTOMOTIVE_ONLY_CODES.has(code)) continue;
     const rule = CODE_RULES[code] ?? DEFAULT_RULE;
     const dedupeKey = `${code}::${value}`;
     if (seen.has(dedupeKey)) continue;
@@ -105,6 +126,12 @@ export function parseCodeValuePairs(
     pairs.push({ code, value, ci: rule.ci, ss: rule.ss, wave: rule.wave });
   }
   return pairs;
+}
+
+/** Drop automotive-only codes (vehicle make) for LeadScience sites. */
+export function filterPairsForSite(pairs: CodeValuePair[], siteType: SiteType): CodeValuePair[] {
+  if (siteType !== "leadscience") return pairs;
+  return pairs.filter((p) => !AUTOMOTIVE_ONLY_CODES.has(p.code));
 }
 
 /**
