@@ -39,16 +39,16 @@ export function CaseInfoSection({ value, onChange }: Props) {
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <Field id="case-number" label="Case Number">
+        <Field id="case-number" label="Case Number" required>
           <Input id="case-number" value={value.caseNumber} onChange={set("caseNumber")} placeholder="e.g. 00458123" maxLength={60} />
         </Field>
-        <Field id="designer-name" label="Designer Name">
+        <Field id="designer-name" label="Designer Name" required>
           <Input id="designer-name" value={value.designerName} onChange={set("designerName")} placeholder="e.g. Jordan Reyes" maxLength={120} />
         </Field>
-        <Field id="dealer-name" label="Dealer / Website Name">
+        <Field id="dealer-name" label="Dealer / Website Name" required>
           <Input id="dealer-name" value={value.dealerName} onChange={set("dealerName")} placeholder="e.g. Riverside Motors" maxLength={160} />
         </Field>
-        <Field id="website-url" label="Website URL">
+        <Field id="website-url" label="Website URL" required>
           <Input id="website-url" value={value.websiteUrl} onChange={set("websiteUrl")} placeholder="https://example.com" maxLength={500} />
         </Field>
         <Field id="date-started" label="Date Started">
