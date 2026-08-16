@@ -19,7 +19,8 @@ export async function runQaBatch(
   rows: QaBatchRow[],
   dealerCodeInput = "",
   siteType: "automotive" | "leadscience" = "automotive",
+  websiteUrl = "",
 ): Promise<QaPageResult[]> {
   const { runQaBatchServer } = await import("./qaEngine.server");
-  return runQaBatchServer({ data: { rows, dealerCodeInput, siteType } });
+  return runQaBatchServer({ data: { rows, dealerCodeInput, siteType, websiteUrl } });
 }
