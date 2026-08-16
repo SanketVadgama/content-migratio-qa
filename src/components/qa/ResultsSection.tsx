@@ -344,41 +344,41 @@ function LinkRow({ item }: { item: QaDetailItem }) {
   const hasTags = Boolean(item.extra && item.extra.length > 0);
 
   return (
-    <div className="bg-card px-3 py-1.5">
-      <div className="flex items-center gap-2">
+    <div className="bg-card px-3 py-2">
+      <div className="flex items-start gap-2">
         <a
           href={item.primary}
           target="_blank"
           rel="noopener noreferrer"
-          className="min-w-0 flex-1 truncate font-mono text-xs text-foreground hover:text-brand hover:underline"
+          className="min-w-0 flex-1 break-all font-mono text-xs text-foreground hover:text-brand hover:underline"
           title={item.primary}
         >
           {item.primary}
         </a>
-        {item.secondary && item.secondary !== "(no text)" ? (
-          <span className="hidden max-w-[30%] shrink-0 truncate text-xs text-muted-foreground sm:inline" title={item.secondary}>
-            {item.secondary}
-          </span>
-        ) : null}
         {hasTags ? (
           <button
             type="button"
             onClick={() => setShowTags((v) => !v)}
-            className="shrink-0 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+            className="shrink-0 whitespace-nowrap text-[11px] font-medium text-muted-foreground hover:text-foreground"
           >
             {showTags ? "hide tags" : `tags (${item.extra!.length})`}
           </button>
         ) : null}
         {item.note ? <FlagPill flag={item.flag} note={item.note} /> : null}
       </div>
+      {item.secondary && item.secondary !== "(no text)" ? (
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          <span className="text-muted-foreground/70">text:</span> {item.secondary}
+        </p>
+      ) : null}
       {showTags && hasTags ? (
-        <div className="mt-1 mb-1 flex flex-wrap gap-1 rounded border border-border/50 bg-muted/40 p-1.5">
+        <p className="mt-1.5 rounded border border-border/50 bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground/80">
           {item.extra!.map((line, j) => (
-            <span key={j} className="rounded bg-card px-1.5 py-0.5 font-mono text-[10px] leading-tight text-foreground/80">
+            <span key={j} className="mr-3 inline-block break-all">
               {line}
             </span>
           ))}
-        </div>
+        </p>
       ) : null}
     </div>
   );
