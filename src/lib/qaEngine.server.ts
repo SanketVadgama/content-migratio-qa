@@ -633,7 +633,10 @@ async function analyzePage(
     const toCheck = unique.slice(0, MAX_LINKS_PER_PAGE);
 
     if (toCheck.length === 0) {
-      map["links-404"] = { status: "pass" };
+      map["links-404"] = {
+        status: "na",
+        evidence: `No checkable links found in scoped content${scopeNote}.`,
+      };
     } else {
       // Fingerprint the site's soft-404 page once (probe a guaranteed-missing
       // URL). Prefer the production base; fall back to the page's own origin.
@@ -653,19 +656,29 @@ async function analyzePage(
       }));
       const broken = results.filter((r) => r.problem !== "");
       if (broken.length === 0) {
-        const baseNote = homeOrigin ? ` (root-relative links checked against ${homeOrigin})` : "";
-        map["links-404"] = { status: "pass", evidence: `All ${toCheck.length} link(s) OK${baseNote}.` };
+        // Pass — but list every checked link so it's clear what was verified.
+        const items: QaDetailItem[] = results.map((r) => ({
+          primary: r.url,
+          flag: "ok",
+          note: `OK (${r.status})`,
+        }));
+        const baseNote = homeOrigin ? ` · root-relative → ${homeOrigin}` : "";
+        map["links-404"] = {
+          status: "pass",
+          evidence: `Checked ${toCheck.length} link(s), all OK${baseNote}.`,
+          details: { kind: "links", items },
+        };
       } else {
-        const items: QaDetailItem[] = broken.map((b) => ({
-          primary: b.url,
-          flag: "fail",
-          note: b.problem,
+        const items: QaDetailItem[] = results.map((r) => ({
+          primary: r.url,
+          flag: r.problem ? "fail" : "ok",
+          note: r.problem ? r.problem : `OK (${r.status})`,
         }));
         const sample = broken.slice(0, 5).map((b) => `${b.url} — ${b.problem}`);
         map["links-404"] = {
           status: "fail",
           evidence:
-            `${broken.length} broken link(s) found: ${sample.join("; ")}` +
+            `${broken.length} of ${toCheck.length} link(s) broken: ${sample.join("; ")}` +
             (capped ? ` — only first ${MAX_LINKS_PER_PAGE} links checked.` : "."),
           details: { kind: "links", items },
         };
