@@ -380,22 +380,33 @@ async function checkLink(url: string, homeOrigin: string, softFp: SoftFingerprin
       const title = (root.querySelector("title")?.text ?? "").replace(/\s+/g, " ").trim().toLowerCase();
       const bodyText = root.text.replace(/\s+/g, " ").trim().toLowerCase();
 
-      // (a) Baseline fingerprint match: this page looks like the site's known
-      //     soft-404 page (same title, and near-same length).
-      if (softFp) {
-        const titleMatch = softFp.title.length > 0 && title === softFp.title;
-        const lenClose = softFp.length > 0 && Math.abs(bodyText.length - softFp.length) / softFp.length < 0.15;
-        const sampleMatch = softFp.sample.length > 50 && bodyText.slice(0, 500) === softFp.sample;
-        if ((titleMatch && lenClose) || sampleMatch) {
-          return { status: res.status, problem: "soft 404 (matches site's not-found page)" };
-        }
+      // (a) Definitive: the page's own canonical/og:url points at a 404 page.
+      //     Many CMSes render a 200 body but self-identify via canonical="/404".
+      const canonical = (
+        root.querySelector('link[rel="canonical"]')?.getAttribute("href") ??
+        root.querySelector('meta[property="og:url"]')?.getAttribute("content") ??
+        ""
+      ).toLowerCase();
+      if (/\/404(\.\w+)?(\/|$|\?)/.test(canonical) || /not[-_]?found/.test(canonical)) {
+        return { status: res.status, problem: "soft 404 (canonical points to 404 page)" };
       }
 
-      // (b) Signal match: title/body contains a not-found phrase, made prominent.
-      const hay = `${title} ${bodyText.slice(0, 4000)}`;
-      const hit = SOFT_404_SIGNALS.find((sig) => hay.includes(sig));
-      if (hit && (title.includes(hit) || bodyText.length < 1500)) {
-        return { status: res.status, problem: `soft 404 ("${hit}")` };
+      // (b) Title signal: a not-found phrase in the <title> is decisive.
+      const titleHit = SOFT_404_SIGNALS.find((sig) => title.includes(sig));
+      if (titleHit) {
+        return { status: res.status, problem: `soft 404 (title: "${titleHit}")` };
+      }
+
+      // (c) Baseline fingerprint match (same title as the site's known 404 page).
+      if (softFp && softFp.title.length > 0 && title === softFp.title) {
+        return { status: res.status, problem: "soft 404 (matches site's not-found page)" };
+      }
+
+      // (d) Body signal, gated to short pages so real articles that merely
+      //     mention "404"/"not found" aren't flagged.
+      const bodyHit = SOFT_404_SIGNALS.find((sig) => bodyText.slice(0, 4000).includes(sig));
+      if (bodyHit && bodyText.length < 1500) {
+        return { status: res.status, problem: `soft 404 ("${bodyHit}")` };
       }
     }
 
