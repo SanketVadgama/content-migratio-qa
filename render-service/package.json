@@ -1,0 +1,18 @@
+{
+  "name": "migration-qa-render-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright render service for Content Migration QA responsive/layout checks",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "postinstall": "playwright install chromium"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
