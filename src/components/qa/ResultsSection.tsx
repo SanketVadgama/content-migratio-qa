@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { StatusPill } from "@/components/qa/StatusPill";
 import {
   CATEGORY_ORDER,
   type CheckStatus,
@@ -208,16 +207,30 @@ function CheckRow({
 
   return (
     <li className="border-b border-border/60 px-5 py-3 last:border-b-0">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm text-foreground">{label}</span>
+      <div className="flex items-start gap-3">
+        {/* Left status box — ✓ pass, ✗ fail, – review/na (matches reference layout) */}
+        <span
+          aria-label={`Status: ${status}`}
+          className={cn(
+            "mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[4px] border text-[11px] font-bold",
+            status === "pass" && "border-success bg-success text-success-foreground",
+            status === "fail" && "border-danger bg-danger text-danger-foreground",
+            (status === "review" || status === "na") && "border-border bg-card text-muted-foreground",
+          )}
+        >
+          {status === "pass" ? "✓" : status === "fail" ? "✗" : status === "na" ? "–" : ""}
+        </span>
+
+        <p className="flex-1 text-[13.5px] leading-snug text-foreground">
+          {label}
           {overridden ? (
-            <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+            <span className="ml-2 rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
               Manual
             </span>
           ) : null}
-        </div>
-        <div className="flex items-center gap-2">
+        </p>
+
+        <div className="flex shrink-0 items-center gap-1">
           {canExpand ? (
             <Button
               type="button"
@@ -230,12 +243,36 @@ function CheckRow({
               {isExpanded ? "Hide" : hasDetails ? `Details (${details!.items.length})` : "Evidence"}
             </Button>
           ) : null}
-          <StatusPill status={status} />
+          {/* N/A toggle — sets/clears an N/A override (matches reference) */}
+          <button
+            type="button"
+            aria-pressed={status === "na" && overridden}
+            onClick={() => onOverride(status === "na" && overridden ? null : "na")}
+            className={cn(
+              "rounded-md border px-2 py-0.5 text-[10.5px] font-semibold tracking-wide transition-colors",
+              status === "na" && overridden
+                ? "border-brand bg-brand text-brand-foreground"
+                : "border-border bg-card text-muted-foreground hover:border-brand hover:text-brand",
+            )}
+          >
+            N/A
+          </button>
+          {/* Note (✎) — opens the evidence/override panel */}
+          <button
+            type="button"
+            title="Notes / evidence"
+            aria-label="Notes / evidence"
+            onClick={() => setExpanded((value) => !value)}
+            disabled={!canExpand}
+            className="rounded-md border border-border bg-card px-1.5 py-0.5 text-[12px] leading-5 text-muted-foreground transition-colors hover:border-brand hover:text-brand disabled:opacity-40"
+          >
+            ✎
+          </button>
         </div>
       </div>
 
       {isExpanded ? (
-        <div className="mt-3 rounded-lg border border-border bg-muted/50 p-3">
+        <div className="mt-3 ml-[30px] rounded-lg border border-border bg-muted/50 p-3">
           {hasEvidence ? <p className="text-sm text-foreground">{evidence}</p> : null}
 
           {hasDetails ? <DetailList details={details!} /> : null}
