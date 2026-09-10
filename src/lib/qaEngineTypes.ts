@@ -78,14 +78,6 @@ export const CHECK_CATALOG: Record<string, { category: CheckCategory; label: str
     category: "Responsive / Layout",
     label: "Mobile and tablet views checked for responsiveness and broken content",
   },
-  "resp-image-title-stacking": {
-    category: "Responsive / Layout",
-    label: "Correct image → title → content stacking on mobile",
-  },
-  "resp-mobile-360": {
-    category: "Responsive / Layout",
-    label: "Mobile layout checked down to 360px screen width",
-  },
   "resp-header-1800": {
     category: "Responsive / Layout",
     label: "Header checked at 1800px+ for overlap and navigation positioning",
@@ -106,17 +98,12 @@ export const CHECK_CATALOG: Record<string, { category: CheckCategory; label: str
   },
   "content-empty-sections": { category: "Content", label: "Empty or unused content sections are hidden" },
   "content-dealer-logo": { category: "Content", label: "Dealer logo is properly cropped and resized" },
-  "content-links-carried-over": {
-    category: "Content",
-    label: "All links from the reference/original page have been carried over",
-  },
   "content-single-h1": { category: "Content", label: "Exactly one H1 is present" },
   // Links / Tracking
   "links-ga4": { category: "Links / Tracking", label: "GA4 tagging has been added to applicable internal/external links" },
   "links-404": { category: "Links / Tracking", label: "No links lead to a 404 page" },
   // Technical / Accessibility
   "tech-element-order": { category: "Technical / Accessibility", label: "Element order has been manually reviewed/updated" },
-  "tech-custom-forms": { category: "Technical / Accessibility", label: "Custom forms have been run through the tagging generator" },
   "tech-dealer-codes": { category: "Technical / Accessibility", label: "Dealer Info Replacement codes are used where possible" },
   "tech-image-size": {
     category: "Technical / Accessibility",
@@ -157,16 +144,12 @@ export const CHECKLIST_BY_TYPE: Record<PageType, string[]> = {
   ],
   "content-migration": [
     "resp-mobile-tablet",
-    "resp-image-title-stacking",
-    "resp-mobile-360",
     "resp-overflow",
     "content-single-h1",
     "content-spelling",
-    "content-links-carried-over",
     "links-ga4",
     "links-404",
     "tech-element-order",
-    "tech-custom-forms",
     "tech-dealer-codes",
     "tech-image-size",
     "tech-alt-text",
