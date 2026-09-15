@@ -46,7 +46,7 @@ export function ResultsSection({ pages, overrides, onOverride, running }: Props)
     return (
       <section className="rounded-xl border border-border bg-card p-10 text-center">
         <p className="text-sm font-medium text-foreground">Running automated checks…</p>
-        <p className="mt-1 text-sm text-muted-foreground">Scanning each page across 17 QA checks.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Scanning each page across 33 QA checks.</p>
       </section>
     );
   }
