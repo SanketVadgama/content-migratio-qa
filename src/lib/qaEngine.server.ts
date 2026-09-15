@@ -470,6 +470,8 @@ async function analyzePage(
   const map: Record<string, { status: CheckStatus; evidence?: string; details?: QaCheckDetails }> = {};
   const scopeNote = ` (scoped to ${region})`;
 
+  // ======================= CONTENT =======================
+
   // content-single-h1
   {
     const count = root.querySelectorAll("h1").length;
@@ -479,61 +481,134 @@ async function analyzePage(
         : { status: "fail", evidence: `${count} h1 element${count === 1 ? "" : "s"} found${scopeNote}.` };
   }
 
-  // content-lorem
+  // content-heading-hierarchy — no skipped levels (H1 → H2 → H3)
   {
-    const phrases = ["lorem ipsum", "dolor sit amet", "your text here", "insert text", "sample text"];
-    const hit = phrases.find((p) => lowerText.includes(p));
-    map["content-lorem"] = hit
-      ? { status: "fail", evidence: `Placeholder copy found: "${hit}".` }
-      : { status: "pass" };
+    const headings = root
+      .querySelectorAll("h1,h2,h3,h4,h5,h6")
+      .map((h) => ({ level: parseInt(h.tagName.slice(1), 10), text: h.text.replace(/\s+/g, " ").trim() }));
+    if (headings.length === 0) {
+      map["content-heading-hierarchy"] = { status: "fail", evidence: `No headings found${scopeNote}.` };
+    } else {
+      const skips: string[] = [];
+      let previous = 0;
+      headings.forEach((h) => {
+        if (previous && h.level > previous + 1) {
+          skips.push(`H${previous} → H${h.level} ("${h.text.slice(0, 50)}")`);
+        }
+        previous = h.level;
+      });
+      map["content-heading-hierarchy"] =
+        skips.length === 0
+          ? { status: "pass", evidence: `${headings.length} headings, no skipped levels${scopeNote}.` }
+          : { status: "fail", evidence: `${skips.length} skipped heading level(s): ${skips.slice(0, 5).join("; ")}.` };
+    }
   }
 
-  // content-dealer-names
+  // content-interactive-tested — detect interactive widgets; functionality itself is manual
   {
-    const hits = DEALER_NAME_BLOCKLIST.filter((term) => lowerHtml.includes(term.toLowerCase()));
-    map["content-dealer-names"] = hits.length
-      ? { status: "fail", evidence: `Placeholder dealer text found: ${hits.join(", ")}.` }
-      : { status: "pass" };
-  }
-
-  // content-spelling (heuristic only)
-  {
-    const doubleSpaces = (text.match(/ {2,}/g) ?? []).length;
-    const repeatedPunct = (text.match(/([!?.]){2,}/g) ?? []).length;
-    const total = doubleSpaces + repeatedPunct;
-    map["content-spelling"] =
-      total > 0
-        ? {
-            status: "review",
-            evidence: `${doubleSpaces} double-space and ${repeatedPunct} repeated-punctuation occurrence(s).`,
-          }
-        : { status: "pass" };
-  }
-
-  // content-empty-sections
-  {
-    const candidates = [
-      ...root.querySelectorAll("section"),
-      ...root.querySelectorAll('div[class*="section"]'),
+    const widgetSelectors = [
+      '[class*="accordion"]',
+      '[class*="collapse"]',
+      '[class*="tab-"]',
+      '[role="tab"]',
+      '[class*="slider"]',
+      '[class*="carousel"]',
+      '[class*="gallery"]',
+      '[class*="modal"]',
+      '[data-bs-toggle]',
+      '[data-toggle]',
     ];
-    const empty = candidates.filter((el) => {
-      const inlineStyle = (el.getAttribute("style") ?? "").replace(/\s+/g, "").toLowerCase();
-      if (inlineStyle.includes("display:none")) return false;
-      const hasMedia = el.querySelector("img") || el.querySelector("iframe");
-      const hasText = el.text.replace(/\s+/g, "").length > 0;
-      return !hasMedia && !hasText;
+    let found = 0;
+    widgetSelectors.forEach((sel) => {
+      try {
+        found += root.querySelectorAll(sel).length;
+      } catch {
+        /* skip unsupported selector */
+      }
     });
-    map["content-empty-sections"] =
-      empty.length > 0
-        ? { status: "review", evidence: `${empty.length} empty/unused section(s) found.` }
-        : { status: "pass" };
+    map["content-interactive-tested"] =
+      found === 0
+        ? { status: "na", evidence: `No accordions, tabs, sliders, galleries or modals detected${scopeNote}.` }
+        : {
+            status: "review",
+            evidence: `${found} interactive element(s) detected — styling and functionality need a manual test.`,
+          };
   }
 
-  // links collection (shared)
+  // content-sidebar-code — required on practice area and testimonials pages
+  {
+    const path = (() => {
+      try {
+        return new URL(pageUrl).pathname.toLowerCase();
+      } catch {
+        return pageUrl.toLowerCase();
+      }
+    })();
+    const requiresSidebar =
+      /(practice|attorney|service|area|testimonial|review)/.test(path) || row.pageType === "content-migration";
+    const rawSource = (row.rawHtml ?? page.html).toLowerCase();
+    const hasSidebarCode = /#sidebar[a-z_]*#/.test(rawSource) || /%\(sidebar/.test(rawSource);
+    const hasSidebarMarkup =
+      /class="[^"]*sidebar/.test(page.html.toLowerCase()) || /id="[^"]*sidebar/.test(page.html.toLowerCase());
+    if (!requiresSidebar) {
+      map["content-sidebar-code"] = { status: "na", evidence: "Page does not appear to require the sidebar." };
+    } else if (hasSidebarCode || hasSidebarMarkup) {
+      map["content-sidebar-code"] = {
+        status: "pass",
+        evidence: hasSidebarCode ? "Sidebar replacement code found." : "Sidebar markup rendered on the page.",
+      };
+    } else {
+      map["content-sidebar-code"] = {
+        status: "fail",
+        evidence: "No sidebar replacement code or sidebar markup found on a page that requires one.",
+      };
+    }
+  }
+
+  // ======================= STYLING =======================
+
+  // style-no-hardcoded-hex — inline hex colours in style attributes / style blocks
+  {
+    const inlineHex = Array.from(page.html.matchAll(/style="[^"]*?(#[0-9a-fA-F]{3,8})\b[^"]*"/g)).map((m) => m[1]);
+    const styleBlocks = Array.from(page.html.matchAll(/<style[\s\S]*?<\/style>/gi)).join(" ");
+    const blockHex = Array.from(styleBlocks.matchAll(/#[0-9a-fA-F]{6}\b/g)).map((m) => m[0]);
+    const all = [...inlineHex, ...blockHex];
+    const unique = Array.from(new Set(all.map((h) => h.toLowerCase())));
+    map["style-no-hardcoded-hex"] =
+      all.length === 0
+        ? { status: "pass", evidence: "No hardcoded hex colors found in inline styles or embedded style blocks." }
+        : {
+            status: "fail",
+            evidence: `${all.length} hardcoded hex color value(s) found (${unique
+              .slice(0, 8)
+              .join(", ")}) — use sitewide classes or variables instead.`,
+          };
+  }
+
+  // style-cta-more-links
+  {
+    const ctas =
+      root.querySelectorAll('a[class*="btn"]').length +
+      root.querySelectorAll('a[class*="more-link"]').length +
+      root.querySelectorAll('[class*="cta"]').length;
+    map["style-cta-more-links"] =
+      ctas === 0
+        ? { status: "fail", evidence: `No CTA buttons or .more-links found in the content${scopeNote}.` }
+        : { status: "review", evidence: `${ctas} CTA/.more-link element(s) found — strategic placement is a manual call.` };
+  }
+
+  map["style-branding-aligned"] = {
+    status: "review",
+    evidence: "Manual review — compare against the homepage, sidebar page, and client branding.",
+  };
+  map["style-ls-layout"] = {
+    status: "review",
+    evidence: "Manual review — component structure and scannability need a visual check.",
+  };
+
+  // ======================= LINKS (shared collection) =======================
   const anchors = root.querySelectorAll("a");
-  const rawHrefs = anchors
-    .map((a) => a.getAttribute("href") ?? "")
-    .filter((h) => isCheckableLink(h));
+  const rawHrefs = anchors.map((a) => a.getAttribute("href") ?? "").filter((h) => isCheckableLink(h));
 
   // links-ga4
   {
@@ -571,7 +646,6 @@ async function analyzePage(
           href.toLowerCase().includes("utm_");
         if (isTagged) tagged++;
 
-        // Collect every data-dotagging-* attribute so the report can show the full GA4 tagging.
         const ga4Attrs: string[] = [];
         const attrRegex = /(data-dotagging-[a-z-]+)="([^"]*)"/gi;
         let m: RegExpExecArray | null;
@@ -584,7 +658,6 @@ async function analyzePage(
           secondary: linkText || "(no text)",
           flag: isTagged ? "ok" : "warn",
           note: isTagged ? "GA4 tagged" : "no GA4 tagging",
-          // Full GA4 tagging detail (all dotagging attributes on this link).
           extra: ga4Attrs.length ? ga4Attrs : undefined,
         });
       });
@@ -596,25 +669,136 @@ async function analyzePage(
           : tagged === total
             ? { status: "pass", details }
             : {
-                status: "review",
+                status: "fail",
                 evidence: `${total - tagged} of ${total} applicable links missing GA4 tagging${scopeNote}.`,
                 details,
               };
     }
   }
 
-  // links-404
+  // links-new-window — PDF and external links must open in a new window
   {
-    // Resolve each href for checking:
-    //  - root-relative ("/contact/") → resolve against the production Website
-    //    URL (Case Info) when provided, else the page URL.
-    //  - absolute (http/https) → leave exactly as-is (external links must not
-    //    be rewritten to the production base).
-    //  - other relative ("about/", "../x") → resolve against the page URL.
+    let pageHost = "";
+    try {
+      pageHost = new URL(pageUrl).host.replace(/^www\./, "");
+    } catch {
+      pageHost = "";
+    }
+    const items: QaDetailItem[] = [];
+    let offenders = 0;
+    let applicable = 0;
+    anchors.forEach((a) => {
+      const href = (a.getAttribute("href") ?? "").trim();
+      if (!isCheckableLink(href)) return;
+      const isPdf = /\.pdf(\?|#|$)/i.test(href);
+      let isExternal = false;
+      if (/^https?:\/\//i.test(href)) {
+        try {
+          isExternal = new URL(href).host.replace(/^www\./, "") !== pageHost;
+        } catch {
+          isExternal = false;
+        }
+      }
+      if (!isPdf && !isExternal) return;
+      applicable++;
+      const target = (a.getAttribute("target") ?? "").toLowerCase();
+      const ok = target === "_blank";
+      if (!ok) offenders++;
+      items.push({
+        primary: href,
+        secondary: a.text.replace(/\s+/g, " ").trim(),
+        flag: ok ? "ok" : "fail",
+        note: `${isPdf ? "PDF" : "external"} · ${ok ? 'target="_blank"' : "opens in same window"}`,
+      });
+    });
+    if (applicable === 0) {
+      map["links-new-window"] = { status: "na", evidence: `No PDF or external links found${scopeNote}.` };
+    } else {
+      const details: QaCheckDetails = { kind: "links", items };
+      map["links-new-window"] =
+        offenders === 0
+          ? { status: "pass", evidence: `All ${applicable} PDF/external link(s) open in a new window.`, details }
+          : {
+              status: "fail",
+              evidence: `${offenders} of ${applicable} PDF/external link(s) do not open in a new window.`,
+              details,
+            };
+    }
+  }
+
+  // links-phone-codes — phone numbers must be clickable tel: links using replacement codes
+  {
+    const telLinks = anchors.filter((a) => (a.getAttribute("href") ?? "").toLowerCase().startsWith("tel:"));
+    const phoneRe = /(\+?\d{1,2}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g;
+    const plainNumbers = Array.from(new Set((text.match(phoneRe) ?? []).map((n) => n.trim())));
+    const linkedNumbers = new Set(
+      telLinks.map((a) => (a.getAttribute("href") ?? "").replace(/[^\d]/g, "").slice(-10)),
+    );
+    const unlinked = plainNumbers.filter((n) => !linkedNumbers.has(n.replace(/[^\d]/g, "").slice(-10)));
+    const rawSource = row.rawHtml ?? "";
+    const usesPhoneCode = /#phone[a-z_]*#/i.test(rawSource) || /%\(\s*phone/i.test(rawSource);
+    const hardcodedTel = telLinks.filter((a) => /\d{7,}/.test(a.getAttribute("href") ?? ""));
+
+    const items: QaDetailItem[] = telLinks.map((a) => ({
+      primary: a.getAttribute("href") ?? "",
+      secondary: a.text.replace(/\s+/g, " ").trim(),
+      flag: "ok",
+      note: "clickable tel: link",
+    }));
+    unlinked.forEach((n) =>
+      items.push({ primary: n, secondary: "", flag: "fail", note: "phone number is not clickable" }),
+    );
+
+    if (telLinks.length === 0 && plainNumbers.length === 0) {
+      map["links-phone-codes"] = { status: "na", evidence: `No phone numbers found${scopeNote}.` };
+    } else if (unlinked.length > 0) {
+      map["links-phone-codes"] = {
+        status: "fail",
+        evidence: `${unlinked.length} phone number(s) are not clickable: ${unlinked.slice(0, 5).join(", ")}.`,
+        details: { kind: "links", items },
+      };
+    } else if (rawSource && !usesPhoneCode && hardcodedTel.length > 0) {
+      map["links-phone-codes"] = {
+        status: "fail",
+        evidence: `${hardcodedTel.length} tel: link(s) hardcode the number instead of using a phone replacement code.`,
+        details: { kind: "links", items },
+      };
+    } else {
+      map["links-phone-codes"] = {
+        status: "pass",
+        evidence: `${telLinks.length} clickable phone link(s), no unlinked numbers${scopeNote}.`,
+        details: { kind: "links", items },
+      };
+    }
+  }
+
+  // links-reference-relative — internal links must use relative paths, must not be
+  // broken, and must match the reference page's link set.
+  {
     const homeOrigin = websiteBase ? normalizeUrl(websiteBase) : "";
+    let pageHost = "";
+    try {
+      pageHost = new URL(pageUrl).host.replace(/^www\./, "");
+    } catch {
+      pageHost = "";
+    }
+
+    // (a) absolute internal links that should be relative
+    const absoluteInternal: string[] = [];
+    anchors.forEach((a) => {
+      const href = (a.getAttribute("href") ?? "").trim();
+      if (!/^https?:\/\//i.test(href)) return;
+      try {
+        if (new URL(href).host.replace(/^www\./, "") === pageHost) absoluteInternal.push(href);
+      } catch {
+        /* ignore */
+      }
+    });
+
+    // (b) broken links (real 404 + soft-404 detection)
     const resolveForCheck = (href: string): string | null => {
       const h = href.trim();
-      if (/^https?:\/\//i.test(h)) return h; // already absolute — as-is
+      if (/^https?:\/\//i.test(h)) return h;
       if (h.startsWith("/") && homeOrigin) {
         try {
           return new URL(h, homeOrigin).toString();
@@ -622,109 +806,204 @@ async function analyzePage(
           return null;
         }
       }
-      return absolutize(h, pageUrl); // fallback: resolve against the page
+      return absolutize(h, pageUrl);
     };
-
-    const resolved = rawHrefs
-      .map(resolveForCheck)
-      .filter((u): u is string => !!u && /^https?:\/\//i.test(u));
+    const resolved = rawHrefs.map(resolveForCheck).filter((u): u is string => !!u && /^https?:\/\//i.test(u));
     const unique = Array.from(new Set(resolved.map(normalizeDest)));
     const capped = unique.length > MAX_LINKS_PER_PAGE;
     const toCheck = unique.slice(0, MAX_LINKS_PER_PAGE);
 
-    if (toCheck.length === 0) {
-      map["links-404"] = {
-        status: "na",
-        evidence: `No checkable links found in scoped content${scopeNote}.`,
-      };
-    } else {
-      // Fingerprint the site's soft-404 page once (probe a guaranteed-missing
-      // URL). Prefer the production base; fall back to the page's own origin.
-      let probeBase = homeOrigin;
-      if (!probeBase) {
-        try {
-          probeBase = new URL(pageUrl).origin;
-        } catch {
-          probeBase = "";
-        }
+    let probeBase = homeOrigin;
+    if (!probeBase) {
+      try {
+        probeBase = new URL(pageUrl).origin;
+      } catch {
+        probeBase = "";
       }
-      const softFp = probeBase ? await probeSoft404(probeBase) : null;
+    }
+    const softFp = toCheck.length && probeBase ? await probeSoft404(probeBase) : null;
+    const results = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
+      url: u,
+      ...(await checkLink(u, homeOrigin, softFp)),
+    }));
+    const broken = results.filter((r) => r.problem !== "");
 
-      const results = await pool(toCheck, LINK_CONCURRENCY, async (u) => ({
-        url: u,
-        ...(await checkLink(u, homeOrigin, softFp)),
-      }));
-      const broken = results.filter((r) => r.problem !== "");
-      if (broken.length === 0) {
-        // Pass — but list every checked link so it's clear what was verified.
-        const items: QaDetailItem[] = results.map((r) => ({
-          primary: r.url,
-          flag: "ok",
-          note: `OK (${r.status})`,
-        }));
-        const baseNote = homeOrigin ? ` · root-relative → ${homeOrigin}` : "";
-        map["links-404"] = {
-          status: "pass",
-          evidence: `Checked ${toCheck.length} link(s), all OK${baseNote}.`,
-          details: { kind: "links", items },
-        };
+    // (c) reference comparison
+    let missingFromReference: string[] = [];
+    let referenceNote = "";
+    if (referenceUrl) {
+      const ref = await fetchPage(referenceUrl);
+      if (!ref.ok || !ref.html) {
+        referenceNote = ` Reference page could not be fetched${ref.error ? `: ${ref.error}` : ` (HTTP ${ref.status})`}.`;
       } else {
-        const items: QaDetailItem[] = results.map((r) => ({
-          primary: r.url,
-          flag: r.problem ? "fail" : "ok",
-          note: r.problem ? r.problem : `OK (${r.status})`,
-        }));
-        const sample = broken.slice(0, 5).map((b) => `${b.url} — ${b.problem}`);
-        map["links-404"] = {
-          status: "fail",
-          evidence:
-            `${broken.length} of ${toCheck.length} link(s) broken: ${sample.join("; ")}` +
-            (capped ? ` — only first ${MAX_LINKS_PER_PAGE} links checked.` : "."),
-          details: { kind: "links", items },
-        };
+        const refRoot = scopeToContent(ref.html).node;
+        const pathsOf = (r: HTMLElement, base: string) =>
+          new Set(
+            r
+              .querySelectorAll("a")
+              .map((a) => a.getAttribute("href") ?? "")
+              .filter(isCheckableLink)
+              .map((h) => absolutize(h, base))
+              .filter((u): u is string => !!u && /^https?:\/\//i.test(u))
+              .map((u) => {
+                try {
+                  return new URL(u).pathname.replace(/\/$/, "").toLowerCase();
+                } catch {
+                  return u.toLowerCase();
+                }
+              }),
+          );
+        const refSet = pathsOf(refRoot, referenceUrl);
+        const newSet = pathsOf(root, pageUrl);
+        missingFromReference = [...refSet].filter((p) => !newSet.has(p));
       }
+    } else {
+      referenceNote = " No reference URL supplied, so link parity was not compared.";
     }
-  }
 
-  // links-carried-over (needs reference)
-  if (!referenceUrl) {
-    map["content-links-carried-over"] = { status: "na" };
-  } else {
-    const ref = await fetchPage(referenceUrl);
-    if (!ref.ok || !ref.html) {
-      map["content-links-carried-over"] = {
-        status: "review",
-        evidence: `Could not fetch reference page${ref.error ? `: ${ref.error}` : ` (HTTP ${ref.status})`}.`,
+    const items: QaDetailItem[] = results.map((r) => ({
+      primary: r.url,
+      flag: r.problem ? "fail" : "ok",
+      note: r.problem ? r.problem : `OK (${r.status})`,
+    }));
+    absoluteInternal.forEach((h) =>
+      items.push({ primary: h, flag: "fail", note: "absolute internal URL — use a relative path" }),
+    );
+    missingFromReference.forEach((p) =>
+      items.push({ primary: p, flag: "warn", note: "on reference page, missing here" }),
+    );
+
+    const problems: string[] = [];
+    if (broken.length) {
+      problems.push(
+        `${broken.length} broken link(s): ${broken
+          .slice(0, 4)
+          .map((b) => `${b.url} — ${b.problem}`)
+          .join("; ")}`,
+      );
+    }
+    if (absoluteInternal.length) {
+      problems.push(`${absoluteInternal.length} internal link(s) use an absolute URL instead of a relative path`);
+    }
+    if (missingFromReference.length) {
+      problems.push(
+        `${missingFromReference.length} reference link(s) missing here: ${missingFromReference.slice(0, 4).join(", ")}`,
+      );
+    }
+
+    if (toCheck.length === 0 && absoluteInternal.length === 0) {
+      map["links-reference-relative"] = { status: "na", evidence: `No checkable links found${scopeNote}.` };
+    } else if (problems.length === 0) {
+      map["links-reference-relative"] = {
+        status: "pass",
+        evidence: `Checked ${toCheck.length} link(s) — all reachable and relative.${referenceNote}`,
+        details: { kind: "links", items },
       };
     } else {
-      const refRoot = scopeToContent(ref.html).node;
-      const collect = (r: HTMLElement, base: string) =>
-        new Set(
-          r
-            .querySelectorAll("a")
-            .map((a) => a.getAttribute("href") ?? "")
-            .filter(isCheckableLink)
-            .map((h) => absolutize(h, base))
-            .filter((u): u is string => !!u && /^https?:\/\//i.test(u))
-            .map(normalizeDest),
-        );
-      const refSet = collect(refRoot, referenceUrl);
-      const newSet = collect(root, pageUrl);
-      const missing = [...refSet].filter((u) => !newSet.has(u));
-      map["content-links-carried-over"] =
-        missing.length === 0
-          ? { status: "pass" }
-          : {
-              status: "review",
-              evidence: `${missing.length} link(s) on reference not found on new page: ${missing
-                .slice(0, 5)
-                .join("; ")}.`,
-            };
+      map["links-reference-relative"] = {
+        status: "fail",
+        evidence: `${problems.join(". ")}.${capped ? ` Only first ${MAX_LINKS_PER_PAGE} links checked.` : ""}${referenceNote}`,
+        details: { kind: "links", items },
+      };
     }
   }
 
-  // Shared image inventory: resolve each src to an absolute URL (so thumbnails
-  // load in the report) and fetch its byte size once (for the 150KB rule).
+  // ======================= CONTENT (reference parity) =======================
+  {
+    const leftovers = DEALER_NAME_BLOCKLIST.filter((term) => lowerHtml.includes(term.toLowerCase()));
+    const placeholders = ["lorem ipsum", "dolor sit amet", "your text here", "insert text", "sample text"].filter((p) =>
+      lowerText.includes(p),
+    );
+    const problems: string[] = [];
+    if (leftovers.length) problems.push(`leftover placeholder text from reused code: ${leftovers.join(", ")}`);
+    if (placeholders.length) problems.push(`placeholder copy present: ${placeholders.join(", ")}`);
+
+    if (referenceUrl) {
+      const ref = await fetchPage(referenceUrl);
+      if (ref.ok && ref.html) {
+        const refText = visibleText(scopeToContent(ref.html).node);
+        const sentences = refText
+          .split(/(?<=[.!?])\s+/)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 60);
+        const missing = sentences.filter((s) => !text.includes(s.slice(0, 60)));
+        if (sentences.length > 0) {
+          const pct = Math.round(((sentences.length - missing.length) / sentences.length) * 100);
+          if (missing.length > 0) {
+            problems.push(
+              `${missing.length} of ${sentences.length} reference passages not found on the new page (${pct}% carried over)`,
+            );
+          }
+        }
+      } else {
+        problems.push("reference page could not be fetched for comparison");
+      }
+    }
+
+    if (!referenceUrl) {
+      map["content-from-reference"] = {
+        status: problems.length ? "fail" : "review",
+        evidence: problems.length
+          ? problems.join("; ") + "."
+          : "Add a reference URL to auto-compare the migrated copy against the source page.",
+      };
+    } else {
+      map["content-from-reference"] = problems.length
+        ? { status: "fail", evidence: problems.join("; ") + "." }
+        : { status: "pass", evidence: "All reference copy found on the new page and no leftover placeholder text." };
+    }
+  }
+
+  // content-logical-sections — structural signal only; meaning is manual
+  {
+    const sections = root.querySelectorAll("section").length + root.querySelectorAll('div[class*="section"]').length;
+    const emptySections = [
+      ...root.querySelectorAll("section"),
+      ...root.querySelectorAll('div[class*="section"]'),
+    ].filter((el) => !el.querySelector("img") && !el.querySelector("iframe") && el.text.replace(/\s+/g, "").length === 0);
+    map["content-logical-sections"] =
+      emptySections.length > 0
+        ? { status: "fail", evidence: `${emptySections.length} empty/unused section(s) found${scopeNote}.` }
+        : {
+            status: "review",
+            evidence: `${sections} content section(s) found — logical order needs a manual read.`,
+          };
+  }
+
+  // content-replacement-codes (#NAME#, #PHONE#, other client info)
+  if (dealerPairs.length === 0) {
+    map["content-replacement-codes"] = {
+      status: "review",
+      evidence: "Add client code = value pairs above to auto-check for hardcoded values.",
+    };
+  } else {
+    const usingRaw = Boolean(row.rawHtml && row.rawHtml.trim());
+    const sourceText = usingRaw ? visibleText(scopeToContent(row.rawHtml as string).node) : text;
+    const sourceLabel = usingRaw ? "raw CMS HTML" : `scoped to ${region}`;
+    const sourceNote = ` (${sourceLabel} · ${effectiveSiteType})`;
+    const hits = detectDealerValues(sourceText, dealerPairs);
+    if (hits.length === 0) {
+      map["content-replacement-codes"] = {
+        status: "pass",
+        evidence: `No hardcoded client values found${sourceNote}.`,
+      };
+    } else {
+      const totalOccurrences = hits.reduce((sum, h) => sum + h.count, 0);
+      const items: QaDetailItem[] = hits.map((h) => ({
+        primary: h.value,
+        secondary: h.code,
+        flag: "fail",
+        note: `should be ${h.code}${h.count > 1 ? ` · ${h.count}×` : ""}`,
+      }));
+      map["content-replacement-codes"] = {
+        status: "fail",
+        evidence: `${hits.length} value(s) hardcoded that should use replacement codes (${totalOccurrences} occurrence(s))${sourceNote}.`,
+        details: { kind: "dealer-codes", items },
+      };
+    }
+  }
+
+  // ======================= IMAGES AND VIDEOS =======================
   const imgEls = root.querySelectorAll("img");
   interface ImgInfo {
     el: (typeof imgEls)[number];
@@ -739,10 +1018,11 @@ async function analyzePage(
     return { el: img, absSrc, rawSrc, bytes };
   });
 
-  // tech-alt-text
+  // img-alt-text
   {
-    if (imgInfos.length === 0) {
-      map["tech-alt-text"] = { status: "na" };
+    const cssImageEls = root.querySelectorAll('[style*="background-image"]');
+    if (imgInfos.length === 0 && cssImageEls.length === 0) {
+      map["img-alt-text"] = { status: "na" };
     } else {
       const imgItems: QaDetailItem[] = [];
       const missing = imgInfos.filter(({ el: img, absSrc, rawSrc, bytes }) => {
@@ -752,150 +1032,305 @@ async function analyzePage(
         const hidden = (img.getAttribute("aria-hidden") ?? "").toLowerCase();
         const decorative = role === "presentation" || hidden === "true";
         const isMissing = !decorative && !alt && !aria;
+        const thin = !isMissing && !decorative && (alt ?? aria ?? "").trim().length < 10;
         const sizeNote = bytes != null ? ` · ${formatBytes(bytes)}` : "";
         imgItems.push({
           primary: absSrc ?? rawSrc ?? "(no src)",
           secondary: alt ?? aria ?? "",
-          flag: isMissing ? "fail" : "ok",
+          flag: isMissing ? "fail" : thin ? "warn" : "ok",
           note:
             (decorative
               ? "decorative (exempt)"
-              : alt
-                ? "has alt text"
-                : aria
-                  ? "has aria-label"
-                  : "MISSING alt text") + sizeNote,
+              : isMissing
+                ? "MISSING alt text"
+                : thin
+                  ? "alt text is very short"
+                  : alt
+                    ? "has alt text"
+                    : "has aria-label") + sizeNote,
         });
         return isMissing;
       });
+      const cssMissingAria = cssImageEls.filter((el) => !el.getAttribute("aria-label") && el.text.trim().length === 0);
+      cssMissingAria.forEach((el) => {
+        const bg = /background-image:\s*url\(['"]?([^'")]+)/i.exec(el.getAttribute("style") ?? "");
+        imgItems.push({
+          primary: bg ? (absolutize(bg[1], pageUrl) ?? bg[1]) : "(css background image)",
+          secondary: "",
+          flag: "fail",
+          note: "CSS image missing aria-label",
+        });
+      });
       const details: QaCheckDetails = { kind: "images", items: imgItems };
-      map["tech-alt-text"] =
-        missing.length === 0
+      const totalMissing = missing.length + cssMissingAria.length;
+      map["img-alt-text"] =
+        totalMissing === 0
           ? { status: "pass", details }
-          : { status: "fail", evidence: `${missing.length} image(s) missing alt text${scopeNote}.`, details };
+          : {
+              status: "fail",
+              evidence: `${missing.length} image(s) missing alt text and ${cssMissingAria.length} CSS image(s) missing aria-label${scopeNote}.`,
+              details,
+            };
     }
   }
 
-  // tech-image-size — flags images over 150KB (real byte size) and, as a
-  // secondary heuristic, absurd declared widths. Rendered-dimension checks
-  // remain Phase 2.
+  // img-optimized — file size + webp preference
   {
     if (imgInfos.length === 0) {
-      map["tech-image-size"] = { status: "na" };
+      map["img-optimized"] = { status: "na" };
     } else {
-      const sizeItems: QaDetailItem[] = [];
+      const items: QaDetailItem[] = [];
       let overLimit = 0;
-      let hugeWidth = 0;
+      let nonWebp = 0;
       imgInfos.forEach(({ el: img, absSrc, rawSrc, bytes }) => {
-        const w = parseInt(img.getAttribute("width") ?? "", 10);
-        const styleW = /width:\s*(\d+)px/i.exec(img.getAttribute("style") ?? "");
-        const styleWidth = styleW ? parseInt(styleW[1], 10) : NaN;
-        const declared = Number.isFinite(w) ? w : Number.isFinite(styleWidth) ? styleWidth : NaN;
-
+        const src = absSrc ?? rawSrc ?? "";
+        const isWebp = /\.webp(\?|#|$)/i.test(src) || /\.avif(\?|#|$)/i.test(src);
         const isOver = bytes != null && bytes > IMAGE_SIZE_LIMIT_BYTES;
-        const isHugeWidth = Number.isFinite(declared) && declared > 3000;
         if (isOver) overLimit++;
-        if (isHugeWidth) hugeWidth++;
-
-        const parts: string[] = [];
-        if (bytes != null) parts.push(formatBytes(bytes));
-        else parts.push("size unknown");
-        if (Number.isFinite(declared)) parts.push(`declared ${declared}px wide`);
-
-        sizeItems.push({
-          primary: absSrc ?? rawSrc ?? "(no src)",
+        if (!isWebp) nonWebp++;
+        const parts = [bytes != null ? formatBytes(bytes) : "size unknown", isWebp ? "webp/avif" : "not webp"];
+        items.push({
+          primary: src || "(no src)",
           secondary: img.getAttribute("alt") ?? "",
-          flag: isOver || isHugeWidth ? "fail" : "ok",
-          note:
-            (isOver ? `OVER 150KB — ${parts.join(" · ")}` : parts.join(" · ")) +
-            (isHugeWidth ? " · width too large" : ""),
+          flag: isOver ? "fail" : isWebp ? "ok" : "warn",
+          note: (isOver ? "OVER 150KB — " : "") + parts.join(" · "),
         });
       });
-      const details: QaCheckDetails = { kind: "oversized-images", items: sizeItems };
-      const problems = overLimit + hugeWidth;
-      if (problems > 0) {
-        const bits: string[] = [];
-        if (overLimit > 0) bits.push(`${overLimit} image(s) over 150KB`);
-        if (hugeWidth > 0) bits.push(`${hugeWidth} image(s) declared wider than 3000px`);
-        map["tech-image-size"] = { status: "fail", evidence: `${bits.join("; ")}${scopeNote}.`, details };
-      } else {
-        map["tech-image-size"] = {
-          status: "pass",
-          evidence: `All images within 150KB${scopeNote}. Rendered-dimension check is Phase 2.`,
+      const details: QaCheckDetails = { kind: "oversized-images", items };
+      if (overLimit > 0) {
+        map["img-optimized"] = {
+          status: "fail",
+          evidence: `${overLimit} image(s) over 150KB${nonWebp ? `; ${nonWebp} not in webp format` : ""}${scopeNote}.`,
           details,
         };
+      } else if (nonWebp > 0) {
+        map["img-optimized"] = {
+          status: "review",
+          evidence: `All images within 150KB, but ${nonWebp} are not webp — webp is preferred.`,
+          details,
+        };
+      } else {
+        map["img-optimized"] = { status: "pass", evidence: `All images webp and within 150KB${scopeNote}.`, details };
       }
     }
   }
 
-  // Responsive / Layout — real measurements via the render service when configured,
-  // otherwise honest placeholders.
-  const render = await callRenderService(pageUrl);
-  if (render) {
-    const overflow = renderCheckToStatus(render.overflow);
-    const header = renderCheckToStatus(render.header1800);
-    const stacking = renderCheckToStatus(render.stacking);
-    map["resp-overflow"] = overflow;
-    map["resp-header-1800"] = header;
-    map["resp-mobile-tablet"] = stacking;
-    map["resp-mobile-360"] = stacking;
-    map["resp-image-title-stacking"] = {
-      status: stacking.status === "pass" ? "review" : stacking.status,
-      evidence:
-        stacking.status === "pass"
-          ? "Fits at 360px; image→title→content order still needs a manual glance."
-          : stacking.evidence,
-    };
-  } else {
-    map["resp-mobile-tablet"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-    map["resp-overflow"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-    map["resp-header-1800"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-    map["resp-image-title-stacking"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
-    map["resp-mobile-360"] = { status: "review", evidence: "Requires rendered-browser check (Phase 2)." };
+  // img-lazy-loading — everything after the first two images should be lazy
+  {
+    if (imgInfos.length === 0) {
+      map["img-lazy-loading"] = { status: "na" };
+    } else {
+      const belowFold = imgInfos.slice(2);
+      const items: QaDetailItem[] = [];
+      const missing = belowFold.filter(({ el: img, absSrc, rawSrc }) => {
+        const loading = (img.getAttribute("loading") ?? "").toLowerCase();
+        const ok = loading === "lazy";
+        items.push({
+          primary: absSrc ?? rawSrc ?? "(no src)",
+          secondary: img.getAttribute("alt") ?? "",
+          flag: ok ? "ok" : "fail",
+          note: ok ? 'loading="lazy"' : "missing loading=lazy",
+        });
+        return !ok;
+      });
+      const details: QaCheckDetails = { kind: "images", items };
+      map["img-lazy-loading"] =
+        belowFold.length === 0
+          ? { status: "na", evidence: "All images are above the fold." }
+          : missing.length === 0
+            ? { status: "pass", evidence: `All ${belowFold.length} below-the-fold image(s) are lazy loaded.`, details }
+            : {
+                status: "fail",
+                evidence: `${missing.length} of ${belowFold.length} below-the-fold image(s) missing loading="lazy".`,
+                details,
+              };
+    }
   }
 
-  // Manual placeholders — set honestly
-  map["content-dealer-logo"] = { status: "review", evidence: "Manual review — logo crop/resize needs a visual check." };
-  map["tech-element-order"] = { status: "review", evidence: "Manual review — element order is intent-dependent." };
-  map["tech-custom-forms"] = { status: "review", evidence: "Manual review — process check, not a page-state check." };
-  // tech-dealer-codes — detect hardcoded dealer values that should have been
-  // replacement codes. When raw CMS HTML is provided for the page, scan THAT
-  // (it still contains the actual %(...) codes, so correctly-templated spots
-  // show the code and won't match — only true hardcoded values are flagged).
-  // Otherwise fall back to the live page's scoped visible text.
-  if (dealerPairs.length === 0) {
-    map["tech-dealer-codes"] = {
-      status: "review",
-      evidence: "Add dealer code = value pairs above to auto-check for hardcoded values.",
-    };
-  } else {
-    const usingRaw = Boolean(row.rawHtml && row.rawHtml.trim());
-    const sourceText = usingRaw ? visibleText(scopeToContent(row.rawHtml as string).node) : text;
-    const sourceLabel = usingRaw ? "raw CMS HTML" : `scoped to ${region}`;
-    const sourceNote = ` (${sourceLabel} · ${effectiveSiteType})`;
-    const hits = detectDealerValues(sourceText, dealerPairs);
-    if (hits.length === 0) {
-      map["tech-dealer-codes"] = {
-        status: "pass",
-        evidence: `No hardcoded dealer values found${sourceNote}.`,
-      };
+  // img-dimensions — inherent width/height to prevent CLS
+  {
+    if (imgInfos.length === 0) {
+      map["img-dimensions"] = { status: "na" };
     } else {
-      const totalOccurrences = hits.reduce((sum, h) => sum + h.count, 0);
-      const items: QaDetailItem[] = hits.map((h) => ({
-        primary: h.value,
-        secondary: h.code,
-        flag: "fail",
-        note: `should be ${h.code}${h.count > 1 ? ` · ${h.count}×` : ""}`,
-      }));
-      map["tech-dealer-codes"] = {
-        status: "fail",
-        evidence: `${hits.length} value(s) hardcoded that should use replacement codes (${totalOccurrences} occurrence(s))${sourceNote}.`,
-        details: { kind: "dealer-codes", items },
+      const items: QaDetailItem[] = [];
+      const missing = imgInfos.filter(({ el: img, absSrc, rawSrc }) => {
+        const w = img.getAttribute("width");
+        const h = img.getAttribute("height");
+        const ok = Boolean(w && h);
+        items.push({
+          primary: absSrc ?? rawSrc ?? "(no src)",
+          secondary: img.getAttribute("alt") ?? "",
+          flag: ok ? "ok" : "fail",
+          note: ok ? `${w}×${h}` : `missing ${!w && !h ? "width and height" : !w ? "width" : "height"}`,
+        });
+        return !ok;
+      });
+      const details: QaCheckDetails = { kind: "images", items };
+      map["img-dimensions"] =
+        missing.length === 0
+          ? { status: "pass", evidence: `All ${imgInfos.length} image(s) declare width and height.`, details }
+          : {
+              status: "fail",
+              evidence: `${missing.length} of ${imgInfos.length} image(s) missing inherent width/height (CLS risk).`,
+              details,
+            };
+    }
+  }
+
+  // video-embeddable-only / video-embed-title
+  {
+    const iframes = root.querySelectorAll("iframe");
+    const videoTags = root.querySelectorAll("video");
+    if (iframes.length === 0 && videoTags.length === 0) {
+      map["video-embeddable-only"] = { status: "na", evidence: `No videos or embeds found${scopeNote}.` };
+      map["video-embed-title"] = { status: "na", evidence: `No embeds found${scopeNote}.` };
+    } else {
+      const selfHosted = videoTags.filter((v) => !!v.querySelector("source") || !!v.getAttribute("src"));
+      map["video-embeddable-only"] =
+        selfHosted.length > 0
+          ? {
+              status: "fail",
+              evidence: `${selfHosted.length} self-hosted <video> element(s) found — only embeddable videos should be migrated.`,
+            }
+          : {
+              status: "pass",
+              evidence: `${iframes.length} embed(s) found, all iframe-based${scopeNote}.`,
+            };
+
+      if (iframes.length === 0) {
+        map["video-embed-title"] = { status: "na", evidence: "No iframe embeds found." };
+      } else {
+        const noTitle = iframes.filter((f) => !(f.getAttribute("title") ?? "").trim());
+        map["video-embed-title"] =
+          noTitle.length === 0
+            ? { status: "pass", evidence: `All ${iframes.length} embed(s) include a title attribute.` }
+            : {
+                status: "fail",
+                evidence: `${noTitle.length} of ${iframes.length} embed(s) are missing a title attribute.`,
+              };
+      }
+    }
+  }
+
+  map["img-relevant"] = {
+    status: imgInfos.length === 0 ? "na" : "review",
+    evidence:
+      imgInfos.length === 0
+        ? undefined
+        : `${imgInfos.length} image(s) on the page — topical and location relevance needs a manual look.`,
+  };
+
+  // ======================= FORMS =======================
+  {
+    const forms = root.querySelectorAll("form");
+    const rawSource = (row.rawHtml ?? page.html).toLowerCase();
+    const hasContactUsCode = rawSource.includes("#contactus#");
+    const replacementForms = (rawSource.match(/#[a-z_]*form[a-z_]*#|#contactus#/g) ?? []).length;
+    const customForms = Math.max(forms.length - replacementForms, 0);
+    const isContactPage = /contact/i.test(pageUrl);
+    const hasSidebar =
+      /class="[^"]*sidebar/.test(page.html.toLowerCase()) || /id="[^"]*sidebar/.test(page.html.toLowerCase());
+
+    // forms-tagging-generator
+    map["forms-tagging-generator"] =
+      customForms === 0
+        ? { status: "na", evidence: "No custom forms detected on the page." }
+        : {
+            status: "review",
+            evidence: `${customForms} custom form(s) detected — confirm they were run through the tagging generator.`,
+          };
+
+    // forms-no-contactus-ls
+    if (effectiveSiteType !== "leadscience") {
+      map["forms-no-contactus-ls"] = { status: "na", evidence: "Not an LS site." };
+    } else {
+      map["forms-no-contactus-ls"] = hasContactUsCode
+        ? { status: "fail", evidence: "#CONTACTUS# found on an LS site — it must not be used here." }
+        : { status: "pass", evidence: "#CONTACTUS# not present." };
+    }
+
+    // forms-no-sidebar-contact
+    if (!isContactPage) {
+      map["forms-no-sidebar-contact"] = { status: "na", evidence: "Not the Contact Us page." };
+    } else {
+      map["forms-no-sidebar-contact"] = hasSidebar
+        ? { status: "fail", evidence: "Sidebar markup found on the Contact Us page — it should be removed." }
+        : { status: "pass", evidence: "No sidebar on the Contact Us page." };
+    }
+
+    // forms-two-form-mix
+    if (forms.length < 2) {
+      map["forms-two-form-mix"] = {
+        status: "na",
+        evidence: `${forms.length} form(s) on the page — the two-form rule does not apply.`,
+      };
+    } else if (forms.length === 2) {
+      map["forms-two-form-mix"] =
+        replacementForms >= 1 && customForms >= 1
+          ? { status: "pass", evidence: "One replacement-code form and one custom form detected." }
+          : {
+              status: "review",
+              evidence: `2 forms detected (${replacementForms} replacement-code, ${customForms} custom) — confirm it is one of each.`,
+            };
+    } else {
+      map["forms-two-form-mix"] = {
+        status: "review",
+        evidence: `${forms.length} forms detected — confirm this is intentional.`,
       };
     }
   }
-  map["final-case-description"] = { status: "review", evidence: "Manual confirmation required." };
-  map["final-special-requests"] = { status: "review", evidence: "Manual confirmation required." };
+
+  // ======================= RESPONSIVENESS =======================
+  const render = await callRenderService(pageUrl);
+  if (render) {
+    const overflow = renderCheckToStatus(render.overflow);
+    const stacking = renderCheckToStatus(render.stacking);
+    const header = renderCheckToStatus(render.header1800);
+    map["resp-no-horizontal-scroll"] = overflow;
+    map["resp-stacking-spacing"] = stacking;
+    map["resp-breakpoints"] = {
+      status: overflow.status === "pass" && stacking.status === "pass" && header.status === "pass" ? "pass" : "review",
+      evidence:
+        overflow.status === "pass" && stacking.status === "pass" && header.status === "pass"
+          ? undefined
+          : "Rendered checks flagged an issue — step through 1920px to 360px manually.",
+    };
+    map["resp-columns-height"] = {
+      status: "review",
+      evidence: "Column height balance needs a visual check at tablet and desktop widths.",
+    };
+  } else {
+    const placeholder = "Requires rendered-browser check (render service not configured).";
+    map["resp-breakpoints"] = { status: "review", evidence: placeholder };
+    map["resp-no-horizontal-scroll"] = { status: "review", evidence: placeholder };
+    map["resp-stacking-spacing"] = { status: "review", evidence: placeholder };
+    map["resp-columns-height"] = { status: "review", evidence: placeholder };
+  }
+
+  // ======================= ACCESSIBILITY =======================
+  map["a11y-spot-check"] = {
+    status: "review",
+    evidence: "Run the page through https://ada-des.lovable.app/ and confirm the results.",
+  };
+
+  // ======================= IF USING AI =======================
+  map["ai-no-giveaways"] = {
+    status: "review",
+    evidence: "Manual review — check for generic AI-looking imagery, copy, and layout.",
+  };
+  {
+    const inlineStyles = (page.html.match(/style="/g) ?? []).length;
+    map["ai-clean-code"] =
+      inlineStyles > 25
+        ? {
+            status: "fail",
+            evidence: `${inlineStyles} inline style attributes found — use Extend/Bootstrap classes before custom CSS.`,
+          }
+        : {
+            status: "review",
+            evidence: `${inlineStyles} inline style attribute(s) — code cleanliness still needs a manual read.`,
+          };
+  }
 
   return { pageUrl, pageType: row.pageType, checks: buildChecks(row.pageType, map) };
 }
