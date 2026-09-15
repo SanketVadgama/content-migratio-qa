@@ -8,11 +8,14 @@ export type PageType = "homepage" | "content-migration" | "other";
 export type CheckStatus = "pass" | "fail" | "review" | "na";
 
 export type CheckCategory =
-  | "Responsive / Layout"
   | "Content"
-  | "Links / Tracking"
-  | "Technical / Accessibility"
-  | "Final Review";
+  | "Styling"
+  | "Images and Videos"
+  | "Links"
+  | "Forms"
+  | "Responsiveness"
+  | "Accessibility"
+  | "If Using AI";
 
 /** One row of user input from the batch table. */
 export interface QaBatchRow {
@@ -64,112 +67,154 @@ export interface QaPageResult {
 }
 
 export const CATEGORY_ORDER: CheckCategory[] = [
-  "Responsive / Layout",
   "Content",
-  "Links / Tracking",
-  "Technical / Accessibility",
-  "Final Review",
+  "Styling",
+  "Images and Videos",
+  "Links",
+  "Forms",
+  "Responsiveness",
+  "Accessibility",
+  "If Using AI",
 ];
 
 /** Master catalog of every check the engine knows how to evaluate. */
 export const CHECK_CATALOG: Record<string, { category: CheckCategory; label: string }> = {
-  // Responsive / Layout
-  "resp-mobile-tablet": {
-    category: "Responsive / Layout",
-    label: "Mobile and tablet views checked for responsiveness and broken content",
-  },
-  "resp-header-1800": {
-    category: "Responsive / Layout",
-    label: "Header checked at 1800px+ for overlap and navigation positioning",
-  },
-  "resp-overflow": { category: "Responsive / Layout", label: "No horizontal overflow / scrollbar" },
-  // Content
-  "content-dealer-names": {
+  // ---------- Content ----------
+  "content-from-reference": {
     category: "Content",
-    label: 'Placeholder dealer names such as "DealerOn XXX", "Kerndt", or "Rothbard" have been replaced',
+    label:
+      "The content is migrated from the correct reference page or SEO document. No old text is left over from reused code. No required content is left off the reference page.",
   },
-  "content-lorem": {
+  "content-logical-sections": {
     category: "Content",
-    label: "Lorem ipsum, class placeholder text, and test/danger text have been removed",
+    label: "Content is organized logically into sections that support the meaning of the text.",
   },
-  "content-spelling": {
+  "content-interactive-tested": {
     category: "Content",
-    label: "Spacing and spelling issues from copied/pasted content have been corrected",
+    label: "Accordions, tabs, sliders, galleries, modals, etc. have been tested for both styling and functionality.",
   },
-  "content-empty-sections": { category: "Content", label: "Empty or unused content sections are hidden" },
-  "content-dealer-logo": { category: "Content", label: "Dealer logo is properly cropped and resized" },
-  "content-single-h1": { category: "Content", label: "Exactly one H1 is present" },
-  // Links / Tracking
-  "links-ga4": { category: "Links / Tracking", label: "GA4 tagging has been added to applicable internal/external links" },
-  "links-404": { category: "Links / Tracking", label: "No links lead to a 404 page" },
-  // Technical / Accessibility
-  "tech-element-order": { category: "Technical / Accessibility", label: "Element order has been manually reviewed/updated" },
-  "tech-dealer-codes": { category: "Technical / Accessibility", label: "Dealer Info Replacement codes are used where possible" },
-  "tech-image-size": {
-    category: "Technical / Accessibility",
-    label: "Oversized images have been manually resized or use an appropriate width setting",
+  "content-sidebar-code": {
+    category: "Content",
+    label:
+      "The sidebar replacement code is included on required pages (namely, practice area pages and the testimonials page).",
   },
-  "tech-alt-text": {
-    category: "Technical / Accessibility",
-    label: "Images contain descriptive alt text or appropriate aria-label/background image treatment",
+  "content-replacement-codes": {
+    category: "Content",
+    label: "Replacement codes have been used wherever possible for #NAME#, #PHONE#, and other client info.",
   },
-  // Final Review
-  "final-case-description": { category: "Final Review", label: "Case description has been re-read" },
-  "final-special-requests": { category: "Final Review", label: "All special requests have been completed or addressed" },
+  "content-single-h1": { category: "Content", label: "One and only one H1 is included on the page." },
+  "content-heading-hierarchy": {
+    category: "Content",
+    label: "Heading hierarchy is logical: H1 → H2 → H3, with no skipped levels.",
+  },
+
+  // ---------- Styling ----------
+  "style-branding-aligned": {
+    category: "Styling",
+    label:
+      "Colors, backgrounds, borders, links and other visual styles are aligned with homepage, sidebar page, and client branding.",
+  },
+  "style-cta-more-links": {
+    category: "Styling",
+    label: "CTA buttons and .more-links are applied strategically to boost conversion.",
+  },
+  "style-no-hardcoded-hex": {
+    category: "Styling",
+    label: "Colors are assigned using classes or variables from sitewide styles, rather than hardcoded hex values.",
+  },
+  "style-ls-layout": {
+    category: "Styling",
+    label:
+      "Layout meets LS standards - content is organized into components to make it more scannable, engaging, and structured.",
+  },
+
+  // ---------- Images and Videos ----------
+  "img-relevant": {
+    category: "Images and Videos",
+    label: "Images are relevant and meaningful to the page topic and client's location.",
+  },
+  "img-optimized": {
+    category: "Images and Videos",
+    label: "Images are optimized and resized to reduce file size. Webp format is preferred.",
+  },
+  "img-lazy-loading": {
+    category: "Images and Videos",
+    label: "Images below the fold include loading=lazy attribute.",
+  },
+  "img-dimensions": {
+    category: "Images and Videos",
+    label: "Images include inherent height and width properties to prevent CLS.",
+  },
+  "img-alt-text": {
+    category: "Images and Videos",
+    label: "Detailed alt text has been added to HTML images. CSS images include aria-labels.",
+  },
+  "video-embeddable-only": { category: "Images and Videos", label: "Only embeddable videos have been migrated." },
+  "video-embed-title": { category: "Images and Videos", label: "Embeds include title tags." },
+
+  // ---------- Links ----------
+  "links-reference-relative": {
+    category: "Links",
+    label: "Links match those on the reference site, and use the relative path (ex. /contact.html).",
+  },
+  "links-ga4": { category: "Links", label: "Links include correct GA4 tagging." },
+  "links-new-window": { category: "Links", label: "PDF and external links open in a new window." },
+  "links-phone-codes": {
+    category: "Links",
+    label: "Phone links use the correct phone number replacement codes and are clickable.",
+  },
+
+  // ---------- Forms ----------
+  "forms-tagging-generator": { category: "Forms", label: "Custom forms have been run through the tagging generator." },
+  "forms-no-contactus-ls": { category: "Forms", label: "#CONTACTUS# has not been added to LS sites." },
+  "forms-no-sidebar-contact": { category: "Forms", label: "The sidebar is not included on the Contact Us page." },
+  "forms-two-form-mix": {
+    category: "Forms",
+    label: "Pages with two forms use one replacement code form and one custom form, not two of either.",
+  },
+
+  // ---------- Responsiveness ----------
+  "resp-breakpoints": { category: "Responsiveness", label: "All break points have been checked from 1920px to 360px." },
+  "resp-no-horizontal-scroll": {
+    category: "Responsiveness",
+    label: "No horizontal scroll bars appear on any screen size.",
+  },
+  "resp-stacking-spacing": {
+    category: "Responsiveness",
+    label: "Content stacks logically and spacing between elements is correct on stacked content.",
+  },
+  "resp-columns-height": {
+    category: "Responsiveness",
+    label: "No side-by-side columns stretch too tall so as to make the content difficult to read.",
+  },
+
+  // ---------- Accessibility ----------
+  "a11y-spot-check": {
+    category: "Accessibility",
+    label: "Work has been spot-checked for accessibility using https://ada-des.lovable.app/",
+  },
+
+  // ---------- If Using AI ----------
+  "ai-no-giveaways": { category: "If Using AI", label: "Ensure visual design doesn't have any obvious AI giveaways." },
+  "ai-clean-code": {
+    category: "If Using AI",
+    label:
+      "AI Code is clean, minimal, and follows our best practices. Extend and Bootstrap classes are used wherever possible before applying custom CSS.",
+  },
 };
 
+/** Every check id, in catalog (category) order. */
+const ALL_IDS = Object.keys(CHECK_CATALOG);
+
 /**
- * Per-page-type checklists, matching the reference QA tool exactly.
- * Each list is the ordered set of check ids that apply to that page type.
+ * Per-page-type checklists. The reviewed checklist is identical for every page
+ * type — page-specific nuance is handled inside individual checks (e.g. the
+ * sidebar and Contact Us rules).
  */
 export const CHECKLIST_BY_TYPE: Record<PageType, string[]> = {
-  homepage: [
-    "resp-mobile-tablet",
-    "resp-header-1800",
-    "resp-overflow",
-    "content-dealer-names",
-    "content-lorem",
-    "content-spelling",
-    "content-empty-sections",
-    "content-dealer-logo",
-    "content-single-h1",
-    "links-ga4",
-    "links-404",
-    "tech-element-order",
-    "tech-dealer-codes",
-    "tech-image-size",
-    "tech-alt-text",
-    "final-case-description",
-    "final-special-requests",
-  ],
-  "content-migration": [
-    "resp-mobile-tablet",
-    "resp-overflow",
-    "content-single-h1",
-    "content-spelling",
-    "links-ga4",
-    "links-404",
-    "tech-element-order",
-    "tech-dealer-codes",
-    "tech-image-size",
-    "tech-alt-text",
-    "final-case-description",
-    "final-special-requests",
-  ],
-  other: [
-    "resp-mobile-tablet",
-    "resp-overflow",
-    "content-single-h1",
-    "content-lorem",
-    "content-spelling",
-    "content-empty-sections",
-    "links-ga4",
-    "links-404",
-    "tech-alt-text",
-    "tech-image-size",
-    "final-case-description",
-    "final-special-requests",
-  ],
+  homepage: ALL_IDS,
+  "content-migration": ALL_IDS,
+  other: ALL_IDS,
 };
 
 /** Returns the ordered check definitions for a given page type. */
